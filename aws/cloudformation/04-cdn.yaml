@@ -116,7 +116,7 @@ Resources:
     Properties:
       DistributionConfig:
         Enabled: true
-        Comment: !Sub "Health Telemetry Simulator — ${DomainName}"
+        Comment: !Sub "Health Telemetry Simulator - ${DomainName}"
         Aliases:
           - !Ref DomainName
         PriceClass: !Ref PriceClass

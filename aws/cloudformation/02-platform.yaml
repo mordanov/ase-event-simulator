@@ -1,7 +1,8 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
   Health Telemetry Simulator — platform stack.
-  Creates: VPC, ALB, ECR repository, ECS Fargate cluster + service, RDS PostgreSQL.
+  Creates: VPC, ALB, ECR repository, ECS Fargate cluster + service,
+  EFS volume, PostgreSQL running as a sidecar container alongside the backend.
   Depends on: 00-buckets (for project name convention only — no cross-stack refs needed here).
 
 # ─── Parameters ───────────────────────────────────────────────────────────────
@@ -20,11 +21,6 @@ Parameters:
       Set to PLACEHOLDER on first bootstrap — CI/CD will update via task-definition revision.
     Default: PLACEHOLDER
 
-  DBUsername:
-    Type: String
-    Default: simulator
-    NoEcho: false
-
   SeedDeviceCount:
     Type: Number
     Default: 1000
@@ -41,13 +37,13 @@ Parameters:
 
   TaskCpu:
     Type: String
-    Default: "512"
-    AllowedValues: ["256", "512", "1024", "2048"]
+    Default: "1024"
+    AllowedValues: ["512", "1024", "2048", "4096"]
 
   TaskMemory:
     Type: String
-    Default: "1024"
-    AllowedValues: ["512", "1024", "2048", "4096"]
+    Default: "2048"
+    AllowedValues: ["1024", "2048", "3072", "4096"]
 
 # ─── Resources ────────────────────────────────────────────────────────────────
 
@@ -102,7 +98,7 @@ Resources:
         - Key: Name
           Value: !Sub "${ProjectName}-public-2"
 
-  # ── Private subnets (RDS) ─────────────────────────────────────────────────
+  # ── Private subnets (EFS mount targets) ──────────────────────────────────
 
   PrivateSubnet1:
     Type: AWS::EC2::Subnet
@@ -161,7 +157,7 @@ Resources:
   ALBSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: ALB — accept HTTP/HTTPS from internet
+      GroupDescription: ALB - accept HTTP/HTTPS from internet
       VpcId: !Ref VPC
       SecurityGroupIngress:
         - IpProtocol: tcp
@@ -179,7 +175,7 @@ Resources:
   ECSSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: ECS tasks — accept 8000 from ALB only
+      GroupDescription: ECS tasks - accept 8000 from ALB only
       VpcId: !Ref VPC
       SecurityGroupIngress:
         - IpProtocol: tcp
@@ -190,19 +186,19 @@ Resources:
         - Key: Name
           Value: !Sub "${ProjectName}-ecs-sg"
 
-  RDSSecurityGroup:
+  EFSSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: RDS — accept PostgreSQL from ECS tasks only
+      GroupDescription: EFS - accept NFS from ECS tasks only
       VpcId: !Ref VPC
       SecurityGroupIngress:
         - IpProtocol: tcp
-          FromPort: 5432
-          ToPort: 5432
+          FromPort: 2049
+          ToPort: 2049
           SourceSecurityGroupId: !Ref ECSSecurityGroup
       Tags:
         - Key: Name
-          Value: !Sub "${ProjectName}-rds-sg"
+          Value: !Sub "${ProjectName}-efs-sg"
 
   # ══ ECR ═══════════════════════════════════════════════════════════════════
 
@@ -269,15 +265,7 @@ Resources:
         - Type: forward
           TargetGroupArn: !Ref BackendTargetGroup
 
-  # ══ RDS PostgreSQL ═════════════════════════════════════════════════════════
-
-  DBSubnetGroup:
-    Type: AWS::RDS::DBSubnetGroup
-    Properties:
-      DBSubnetGroupDescription: Private subnets for RDS
-      SubnetIds:
-        - !Ref PrivateSubnet1
-        - !Ref PrivateSubnet2
+  # ══ PostgreSQL credentials ═════════════════════════════════════════════════
 
   DBSecret:
     Type: AWS::SecretsManager::Secret
@@ -285,33 +273,56 @@ Resources:
       Name: !Sub "/${ProjectName}/db-password"
       Description: Auto-generated PostgreSQL password for the simulator database.
       GenerateSecretString:
-        SecretStringTemplate: !Sub '{"username": "${DBUsername}"}'
+        SecretStringTemplate: '{"username": "simulator"}'
         GenerateStringKey: password
         ExcludeCharacters: "\"@/\\"
         PasswordLength: 32
 
-  RDSInstance:
-    Type: AWS::RDS::DBInstance
-    DeletionPolicy: Snapshot
-    UpdateReplacePolicy: Snapshot
+  # ══ EFS (persistent volume for the PostgreSQL sidecar) ════════════════════
+
+  EFSFileSystem:
+    Type: AWS::EFS::FileSystem
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
-      DBInstanceIdentifier: !Sub "${ProjectName}-db"
-      DBName: simulator
-      Engine: postgres
-      EngineVersion: "16"
-      DBInstanceClass: db.t3.micro
-      AllocatedStorage: "20"
-      StorageType: gp2
-      StorageEncrypted: true
-      MasterUsername: !Ref DBUsername
-      MasterUserPassword: !Sub "{{resolve:secretsmanager:${DBSecret}:SecretString:password}}"
-      DBSubnetGroupName: !Ref DBSubnetGroup
-      VPCSecurityGroups:
-        - !Ref RDSSecurityGroup
-      MultiAZ: false
-      PubliclyAccessible: false
-      BackupRetentionPeriod: 7
-      DeletionProtection: false
+      Encrypted: true
+      PerformanceMode: generalPurpose
+      ThroughputMode: bursting
+      FileSystemTags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-postgres-data"
+
+  # Mount targets in both private subnets so ECS tasks in either AZ can reach EFS
+  EFSMountTarget1:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref EFSFileSystem
+      SubnetId: !Ref PrivateSubnet1
+      SecurityGroups:
+        - !Ref EFSSecurityGroup
+
+  EFSMountTarget2:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref EFSFileSystem
+      SubnetId: !Ref PrivateSubnet2
+      SecurityGroups:
+        - !Ref EFSSecurityGroup
+
+  # Access point scoped to /postgres-data, owned by UID/GID 70 (postgres user in alpine image)
+  EFSAccessPoint:
+    Type: AWS::EFS::AccessPoint
+    Properties:
+      FileSystemId: !Ref EFSFileSystem
+      PosixUser:
+        Uid: "70"
+        Gid: "70"
+      RootDirectory:
+        Path: /postgres-data
+        CreationInfo:
+          OwnerUid: "70"
+          OwnerGid: "70"
+          Permissions: "700"
 
   # ══ ECS ════════════════════════════════════════════════════════════════════
 
@@ -371,9 +382,22 @@ Resources:
                   - iot:Subscribe
                   - iot:Receive
                 Resource: "*"
+        - PolicyName: EFSAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - elasticfilesystem:ClientMount
+                  - elasticfilesystem:ClientWrite
+                  - elasticfilesystem:ClientRootAccess
+                Resource: !GetAtt EFSFileSystem.Arn
 
   BackendTaskDefinition:
     Type: AWS::ECS::TaskDefinition
+    DependsOn:
+      - EFSMountTarget1
+      - EFSMountTarget2
     Properties:
       Family: !Sub "${ProjectName}-backend"
       RequiresCompatibilities:
@@ -383,10 +407,57 @@ Resources:
       NetworkMode: awsvpc
       ExecutionRoleArn: !GetAtt ECSTaskExecutionRole.Arn
       TaskRoleArn: !GetAtt ECSTaskRole.Arn
+      Volumes:
+        - Name: postgres-data
+          EFSVolumeConfiguration:
+            FilesystemId: !Ref EFSFileSystem
+            TransitEncryption: ENABLED
+            AuthorizationConfig:
+              AccessPointId: !Ref EFSAccessPoint
+              IAM: ENABLED
       ContainerDefinitions:
+
+        # ── PostgreSQL sidecar ───────────────────────────────────────────────
+        - Name: postgres
+          Image: postgres:16-alpine
+          Essential: true
+          Environment:
+            - Name: POSTGRES_USER
+              Value: simulator
+            - Name: POSTGRES_PASSWORD
+              Value: !Sub "{{resolve:secretsmanager:${DBSecret}:SecretString:password}}"
+            - Name: POSTGRES_DB
+              Value: simulator
+            # Store data in a subdirectory so postgres can init the empty EFS mount
+            - Name: PGDATA
+              Value: /var/lib/postgresql/data/pgdata
+          MountPoints:
+            - ContainerPath: /var/lib/postgresql/data
+              SourceVolume: postgres-data
+              ReadOnly: false
+          HealthCheck:
+            Command:
+              - CMD-SHELL
+              - "pg_isready -U simulator -d simulator || exit 1"
+            Interval: 10
+            Timeout: 5
+            Retries: 5
+            StartPeriod: 30
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref BackendLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: postgres
+
+        # ── FastAPI backend ──────────────────────────────────────────────────
         - Name: backend
           Image: !Ref BackendImage
           Essential: true
+          # Wait for postgres to pass its health check before starting
+          DependsOn:
+            - ContainerName: postgres
+              Condition: HEALTHY
           PortMappings:
             - ContainerPort: 8000
               Protocol: tcp
@@ -399,10 +470,9 @@ Resources:
               Value: info
             - Name: SEED_DEVICE_COUNT
               Value: !Sub "${SeedDeviceCount}"
+            # postgres is a sidecar — containers in the same task share the network namespace
             - Name: DATABASE_URL
-              Value: !Sub
-                - "postgresql+asyncpg://${DBUsername}:{{resolve:secretsmanager:${DBSecret}:SecretString:password}}@${Endpoint}:5432/simulator"
-                - Endpoint: !GetAtt RDSInstance.Endpoint.Address
+              Value: !Sub "postgresql+asyncpg://simulator:{{resolve:secretsmanager:${DBSecret}:SecretString:password}}@localhost:5432/simulator"
             - Name: CERT_APPROVAL_DELAY_SECONDS
               Value: !Sub "${CertApprovalDelaySecs}"
             - Name: CERT_VALIDITY_DAYS
@@ -428,7 +498,8 @@ Resources:
             Interval: 30
             Timeout: 5
             Retries: 3
-            StartPeriod: 90
+            # postgres startup + migrations + seed can take ~2 min combined
+            StartPeriod: 180
 
   BackendService:
     Type: AWS::ECS::Service
@@ -458,7 +529,7 @@ Resources:
         DeploymentCircuitBreaker:
           Enable: true
           Rollback: true
-      HealthCheckGracePeriodSeconds: 120
+      HealthCheckGracePeriodSeconds: 300
 
 # ─── Outputs ──────────────────────────────────────────────────────────────────
 
@@ -493,6 +564,12 @@ Outputs:
     Value: !GetAtt ALB.DNSName
     Export:
       Name: !Sub "${AWS::StackName}:ALBDNSName"
+
+  EFSFileSystemId:
+    Description: EFS file system ID — retained after stack deletion; delete manually if no longer needed.
+    Value: !Ref EFSFileSystem
+    Export:
+      Name: !Sub "${AWS::StackName}:EFSFileSystemId"
 
   VPCId:
     Value: !Ref VPC
