@@ -243,6 +243,14 @@ else
   step "Platform — VPC / ECR / ECS / RDS / ALB (02-platform)"
   info "This step provisions RDS and ECS; it may take 5-10 minutes..."
 
+  # Preserve the current BackendImage parameter if the stack already exists,
+  # so a re-run does not reset a real image URI back to PLACEHOLDER.
+  EXISTING_IMAGE=$(aws cloudformation describe-stacks \
+    --stack-name "$STACK_PLATFORM" --region "$REGION" \
+    --query 'Stacks[0].Parameters[?ParameterKey==`BackendImage`].ParameterValue' \
+    --output text 2>/dev/null || true)
+  BACKEND_IMAGE_PARAM="${EXISTING_IMAGE:-PLACEHOLDER}"
+
   aws cloudformation deploy \
     --template-file "$CF_DIR/02-platform.yaml" \
     --stack-name "$STACK_PLATFORM" \
@@ -250,7 +258,7 @@ else
     --capabilities CAPABILITY_NAMED_IAM \
     --parameter-overrides \
         ProjectName="$PROJECT_NAME" \
-        BackendImage="PLACEHOLDER" \
+        BackendImage="$BACKEND_IMAGE_PARAM" \
     --no-fail-on-empty-changeset
   success "Platform stack deployed: $STACK_PLATFORM"
 fi
@@ -296,32 +304,40 @@ else
   docker push "$FULL_IMAGE"
   success "Backend image pushed: $FULL_IMAGE"
 
-  # Update the ECS task definition + service to use the real image
+  # Only register a new task definition revision and redeploy if the image
+  # stored in the current task definition differs from what we just pushed.
   TASK_DEF_FAMILY="${PROJECT_NAME}-backend"
   CURRENT_TASK_DEF=$(aws ecs describe-task-definition \
     --task-definition "$TASK_DEF_FAMILY" --region "$REGION" \
     --query 'taskDefinition' --output json)
 
-  NEW_TASK_DEF=$(echo "$CURRENT_TASK_DEF" \
-    | jq --arg img "$FULL_IMAGE" \
-         '.containerDefinitions[0].image = $img
-          | del(.taskDefinitionArn, .revision, .status, .requiresAttributes,
-                .placementConstraints, .compatibilities, .registeredAt, .registeredBy)')
+  CURRENT_IMAGE=$(echo "$CURRENT_TASK_DEF" \
+    | jq -r '.containerDefinitions[0].image')
 
-  NEW_REVISION=$(aws ecs register-task-definition \
-    --region "$REGION" \
-    --cli-input-json "$NEW_TASK_DEF" \
-    --query 'taskDefinition.taskDefinitionArn' \
-    --output text)
-  success "New task definition: $NEW_REVISION"
+  if [[ "$CURRENT_IMAGE" == "$FULL_IMAGE" ]]; then
+    success "ECS task definition already uses $FULL_IMAGE — no update needed"
+  else
+    NEW_TASK_DEF=$(echo "$CURRENT_TASK_DEF" \
+      | jq --arg img "$FULL_IMAGE" \
+           '.containerDefinitions[0].image = $img
+            | del(.taskDefinitionArn, .revision, .status, .requiresAttributes,
+                  .placementConstraints, .compatibilities, .registeredAt, .registeredBy)')
 
-  aws ecs update-service \
-    --cluster "$ECS_CLUSTER" \
-    --service "$ECS_SERVICE" \
-    --task-definition "$NEW_REVISION" \
-    --region "$REGION" \
-    --force-new-deployment > /dev/null
-  success "ECS service update triggered"
+    NEW_REVISION=$(aws ecs register-task-definition \
+      --region "$REGION" \
+      --cli-input-json "$NEW_TASK_DEF" \
+      --query 'taskDefinition.taskDefinitionArn' \
+      --output text)
+    success "New task definition: $NEW_REVISION"
+
+    aws ecs update-service \
+      --cluster "$ECS_CLUSTER" \
+      --service "$ECS_SERVICE" \
+      --task-definition "$NEW_REVISION" \
+      --region "$REGION" \
+      --force-new-deployment > /dev/null
+    success "ECS service update triggered"
+  fi
 fi
 
 # ─── Step 4 — ACM certificate (us-east-1) ────────────────────────────────────
@@ -382,23 +398,28 @@ else
   FRONTEND_DIST="$PROJECT_ROOT/frontend/dist"
   if [[ -d "$FRONTEND_DIST" ]]; then
     info "Uploading frontend build to s3://${FRONTEND_BUCKET}/ ..."
-    aws s3 sync "$FRONTEND_DIST/" "s3://${FRONTEND_BUCKET}/" \
+    SYNC_OUTPUT=$(aws s3 sync "$FRONTEND_DIST/" "s3://${FRONTEND_BUCKET}/" \
       --region "$REGION" \
       --delete \
       --cache-control "public,max-age=31536000,immutable" \
       --exclude "index.html" \
-      --exclude "manifest.json"
-    # index.html and manifest.json should not be cached long-term
-    aws s3 cp "$FRONTEND_DIST/index.html" "s3://${FRONTEND_BUCKET}/index.html" \
+      --exclude "manifest.json")
+    # index.html and manifest.json must not be cached long-term
+    IDX_OUTPUT=$(aws s3 cp "$FRONTEND_DIST/index.html" "s3://${FRONTEND_BUCKET}/index.html" \
       --region "$REGION" \
-      --cache-control "no-cache,no-store,must-revalidate"
+      --cache-control "no-cache,no-store,must-revalidate")
     aws s3 cp "$FRONTEND_DIST/manifest.json" "s3://${FRONTEND_BUCKET}/manifest.json" \
       --region "$REGION" \
       --cache-control "no-cache,no-store,must-revalidate" 2>/dev/null || true
-    aws cloudfront create-invalidation \
-      --distribution-id "$CF_DIST_ID" \
-      --paths "/*" > /dev/null
-    success "Frontend deployed + CloudFront cache invalidated"
+    # Only invalidate if any files were actually uploaded or deleted
+    if [[ -n "$SYNC_OUTPUT" || "$IDX_OUTPUT" == *"upload"* ]]; then
+      aws cloudfront create-invalidation \
+        --distribution-id "$CF_DIST_ID" \
+        --paths "/*" > /dev/null
+      success "Frontend deployed + CloudFront cache invalidated"
+    else
+      success "Frontend S3 already up to date — no invalidation needed"
+    fi
   else
     warn "frontend/dist/ not found — run 'cd frontend && npm run build' then re-run with SKIP_BUCKETS=1 SKIP_JITR=1 SKIP_PLATFORM=1 SKIP_DOCKER=1 SKIP_ACM=1"
   fi
