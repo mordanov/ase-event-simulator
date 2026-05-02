@@ -1,0 +1,45 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Health Telemetry Simulator — ACM certificate for CloudFront.
+  IMPORTANT: This stack MUST be deployed in us-east-1 regardless of the
+  application region, because CloudFront only accepts certificates from
+  us-east-1.  bootstrap.sh handles this automatically.
+
+# ─── Parameters ───────────────────────────────────────────────────────────────
+
+Parameters:
+
+  DomainName:
+    Type: String
+    Description: >
+      Public hostname for the simulator, e.g. event-simulator.somedomain.com.
+      An ACM certificate covering exactly this name will be issued.
+
+  HostedZoneId:
+    Type: String
+    Description: >
+      Route 53 hosted zone ID for the domain above.
+      CloudFormation uses it to create the DNS validation CNAME automatically.
+
+# ─── Resources ────────────────────────────────────────────────────────────────
+
+Resources:
+
+  Certificate:
+    Type: AWS::CertificateManager::Certificate
+    Properties:
+      DomainName: !Ref DomainName
+      ValidationMethod: DNS
+      DomainValidationOptions:
+        - DomainName: !Ref DomainName
+          HostedZoneId: !Ref HostedZoneId
+
+# ─── Outputs ──────────────────────────────────────────────────────────────────
+
+Outputs:
+
+  CertificateArn:
+    Description: ARN of the ACM certificate (pass to 04-cdn.yaml as CertificateArn).
+    Value: !Ref Certificate
+    Export:
+      Name: !Sub "${AWS::StackName}:CertificateArn"

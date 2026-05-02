@@ -1,0 +1,35 @@
+{
+  "name": "Health Telemetry Simulator",
+  "short_name": "Telemetry",
+  "description": "Multi-protocol IoT device data generator",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#080b12",
+  "theme_color": "#0b1220",
+  "icons": [
+    {
+      "src": "iot.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "iot-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "health.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "health-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

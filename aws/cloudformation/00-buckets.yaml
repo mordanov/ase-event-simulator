@@ -1,0 +1,85 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Health Telemetry Simulator — S3 buckets.
+  Deploy this stack FIRST; all other stacks depend on its outputs.
+  - DeployBucket : Lambda zips + CloudFormation templates
+  - FrontendBucket : React static assets (private, served via CloudFront)
+
+Parameters:
+
+  ProjectName:
+    Type: String
+    Default: health-simulator
+    Description: Used as a prefix for bucket names. Must be lowercase alphanumeric/hyphens.
+
+# ─── Resources ────────────────────────────────────────────────────────────────
+
+Resources:
+
+  # ── Lambda / CF artefact bucket ───────────────────────────────────────────
+
+  DeployBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub "${ProjectName}-deploy-${AWS::AccountId}-${AWS::Region}"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        IgnorePublicAcls: true
+        BlockPublicPolicy: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire-old-versions
+            Status: Enabled
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 30
+          - Id: expire-tmp-uploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 1
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # ── Frontend static-asset bucket (private — CloudFront reads via OAC) ─────
+
+  FrontendBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub "${ProjectName}-frontend-${AWS::AccountId}-${AWS::Region}"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        IgnorePublicAcls: true
+        BlockPublicPolicy: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+# ─── Outputs ──────────────────────────────────────────────────────────────────
+
+Outputs:
+
+  DeployBucketName:
+    Description: S3 bucket for Lambda packages and CloudFormation templates.
+    Value: !Ref DeployBucket
+    Export:
+      Name: !Sub "${AWS::StackName}:DeployBucketName"
+
+  FrontendBucketName:
+    Description: S3 bucket for the React frontend static files.
+    Value: !Ref FrontendBucket
+    Export:
+      Name: !Sub "${AWS::StackName}:FrontendBucketName"
+
+  FrontendBucketArn:
+    Description: ARN of the frontend S3 bucket (needed for CloudFront OAC policy).
+    Value: !GetAtt FrontendBucket.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}:FrontendBucketArn"

@@ -1,0 +1,205 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  JITR (Just-In-Time Registration) infrastructure for Health Telemetry Simulator.
+  Creates: Lambda handler, IAM role, IoT Rule, IoT Thing Type.
+  Triggered by bootstrap.sh after CA registration.
+
+# ─── Parameters ───────────────────────────────────────────────────────────────
+
+Parameters:
+
+  LambdaS3Bucket:
+    Type: String
+    Description: S3 bucket containing the Lambda deployment zip.
+
+  LambdaS3Key:
+    Type: String
+    Description: S3 key of the Lambda deployment zip.
+    Default: lambda/jitr_handler.zip
+
+  PolicyName:
+    Type: String
+    Default: HealthSimulatorDevicePolicy
+    Description: IoT policy attached to every registered device certificate.
+
+  ThingTypeName:
+    Type: String
+    Default: HealthSimulatorDevice
+    Description: IoT Thing Type assigned to each registered device.
+
+  TelemetryTopicPrefix:
+    Type: String
+    Default: health/telemetry
+    Description: >
+      MQTT topic prefix. Each device publishes to <prefix>/<device_id>.
+
+  LogRetentionDays:
+    Type: Number
+    Default: 14
+    AllowedValues: [1, 3, 5, 7, 14, 30, 60, 90]
+
+# ─── Resources ────────────────────────────────────────────────────────────────
+
+Resources:
+
+  # ── CloudWatch log group ───────────────────────────────────────────────────
+
+  JITRLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${AWS::StackName}-jitr"
+      RetentionInDays: !Ref LogRetentionDays
+
+  # ── IAM role for Lambda ────────────────────────────────────────────────────
+
+  JITRLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-jitr-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: JITRIoTPermissions
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: CertificateManagement
+                Effect: Allow
+                Action:
+                  - iot:DescribeCertificate
+                  - iot:UpdateCertificate
+                Resource: !Sub "arn:aws:iot:${AWS::Region}:${AWS::AccountId}:cert/*"
+
+              - Sid: ThingManagement
+                Effect: Allow
+                Action:
+                  - iot:CreateThing
+                  - iot:DescribeThing
+                Resource: !Sub "arn:aws:iot:${AWS::Region}:${AWS::AccountId}:thing/*"
+
+              - Sid: ThingTypeRead
+                Effect: Allow
+                Action:
+                  - iot:DescribeThingType
+                Resource: !Sub "arn:aws:iot:${AWS::Region}:${AWS::AccountId}:thingtype/*"
+
+              - Sid: PolicyManagement
+                Effect: Allow
+                Action:
+                  - iot:CreatePolicy
+                  - iot:GetPolicy
+                  - iot:AttachPolicy
+                Resource:
+                  - !Sub "arn:aws:iot:${AWS::Region}:${AWS::AccountId}:policy/*"
+                  - !Sub "arn:aws:iot:${AWS::Region}:${AWS::AccountId}:cert/*"
+
+              - Sid: ThingPrincipalAttach
+                Effect: Allow
+                Action:
+                  - iot:AttachThingPrincipal
+                Resource: !Sub "arn:aws:iot:${AWS::Region}:${AWS::AccountId}:thing/*"
+
+              - Sid: STSIdentity
+                Effect: Allow
+                Action: sts:GetCallerIdentity
+                Resource: "*"
+
+  # ── Lambda function ────────────────────────────────────────────────────────
+
+  JITRFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: JITRLogGroup
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-jitr"
+      Description: Activates device certificates and creates IoT Things on first connect (JITR).
+      Runtime: python3.12
+      Handler: jitr_handler.handler
+      Role: !GetAtt JITRLambdaRole.Arn
+      Timeout: 30
+      MemorySize: 256
+      Code:
+        S3Bucket: !Ref LambdaS3Bucket
+        S3Key: !Ref LambdaS3Key
+      Environment:
+        Variables:
+          POLICY_NAME:  !Ref PolicyName
+          THING_TYPE:   !Ref ThingTypeName
+          TOPIC_PREFIX: !Ref TelemetryTopicPrefix
+      LoggingConfig:
+        LogGroup: !Ref JITRLogGroup
+
+  # ── Permission: IoT Core → Lambda ─────────────────────────────────────────
+
+  JITRLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt JITRFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: iot.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+
+  # ── IoT Rule (JITR trigger) ────────────────────────────────────────────────
+
+  JITRRule:
+    Type: AWS::IoT::TopicRule
+    Properties:
+      # Rule names may not contain hyphens
+      RuleName: !Join ["", !Split ["-", !Sub "${AWS::StackName}_jitr_rule"]]
+      TopicRulePayload:
+        Description: Triggers JITR Lambda when a new device cert is pending activation.
+        # Fires on every certificate registered via auto-registration
+        Sql: >-
+          SELECT * FROM '$aws/events/certificates/registered/+'
+          WHERE certificateStatus = 'PENDING_ACTIVATION'
+        AwsIotSqlVersion: "2016-03-23"
+        RuleDisabled: false
+        Actions:
+          - Lambda:
+              FunctionArn: !GetAtt JITRFunction.Arn
+
+  # ── IoT Thing Type ─────────────────────────────────────────────────────────
+
+  HealthSimulatorThingType:
+    Type: AWS::IoT::ThingType
+    Properties:
+      ThingTypeName: !Ref ThingTypeName
+      ThingTypeProperties:
+        ThingTypeDescription: "Health Telemetry Simulator device"
+        SearchableAttributes:
+          - device_type
+          - firmware_version
+
+# ─── Outputs ──────────────────────────────────────────────────────────────────
+
+Outputs:
+
+  LambdaFunctionArn:
+    Description: ARN of the JITR Lambda function.
+    Value: !GetAtt JITRFunction.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}:JITRFunctionArn"
+
+  IoTRuleName:
+    Description: Name of the IoT Topic Rule.
+    Value: !Ref JITRRule
+    Export:
+      Name: !Sub "${AWS::StackName}:IoTRuleName"
+
+  ThingTypeName:
+    Description: IoT Thing Type for simulator devices.
+    Value: !Ref ThingTypeName
+    Export:
+      Name: !Sub "${AWS::StackName}:ThingTypeName"
+
+  DevicePolicyName:
+    Description: IoT policy attached to each registered device.
+    Value: !Ref PolicyName
+    Export:
+      Name: !Sub "${AWS::StackName}:DevicePolicyName"

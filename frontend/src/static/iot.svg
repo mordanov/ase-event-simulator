@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <style>
+      .bg { fill: #0b1220; }
+      .frame { stroke: #1e293b; stroke-width: 16; fill: none; }
+      .primary { stroke: #38bdf8; stroke-width: 20; fill: none; stroke-linecap: round; }
+      .soft { stroke: #38bdf8; stroke-opacity: 0.25; stroke-width: 12; fill: none; }
+      .accent { fill: #38bdf8; }
+    </style>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="6" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  <rect class="bg" width="512" height="512" rx="96"/>
+  <rect class="frame" x="24" y="24" width="464" height="464" rx="80"/>
+  <g filter="url(#glow)">
+    <line class="primary" x1="256" y1="128" x2="256" y2="384"/>
+    <line class="primary" x1="200" y1="128" x2="312" y2="128"/>
+    <line class="primary" x1="200" y1="384" x2="312" y2="384"/>
+  </g>
+  <circle class="primary" cx="96" cy="256" r="32"/>
+  <circle class="primary" cx="416" cy="256" r="32"/>
+  <line class="soft" x1="128" y1="256" x2="224" y2="256"/>
+  <line class="soft" x1="288" y1="256" x2="384" y2="256"/>
+  <polyline class="primary" points="140,256 180,210 220,300 260,230"/>
+  <polyline class="primary" points="252,230 292,300 332,210 372,256"/>
+  <circle class="accent" cx="256" cy="256" r="18"/>
+</svg>
