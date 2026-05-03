@@ -241,14 +241,53 @@ if [[ "$SKIP_PLATFORM" == "1" ]]; then
   skip "02-platform (SKIP_PLATFORM=1)"
 else
   step "Platform — VPC / ECR / ECS / RDS / ALB (02-platform)"
-  info "This step provisions RDS and ECS; it may take 5-10 minutes..."
+  info "This step provisions ECS and EFS; it may take 5-10 minutes..."
+
+  # ── ROLLBACK_COMPLETE recovery ──────────────────────────────────────────────
+  # A stack in ROLLBACK_COMPLETE cannot be updated — it must be deleted first.
+  # Resources with DeletionPolicy:Retain (ECR, EFS) are left behind by CF, which
+  # causes "already exists" errors on the next create attempt. Clean them up here.
+  STACK_STATUS=$(aws cloudformation describe-stacks \
+    --stack-name "$STACK_PLATFORM" --region "$REGION" \
+    --query 'Stacks[0].StackStatus' --output text 2>/dev/null || echo "DOES_NOT_EXIST")
+
+  if [[ "$STACK_STATUS" == "ROLLBACK_COMPLETE" ]]; then
+    warn "Stack $STACK_PLATFORM is in ROLLBACK_COMPLETE — cleaning up before redeployment"
+
+    ECR_REPO_NAME="${PROJECT_NAME}-backend"
+    if aws ecr describe-repositories \
+        --repository-names "$ECR_REPO_NAME" --region "$REGION" &>/dev/null; then
+      IMAGE_IDS=$(aws ecr list-images \
+        --repository-name "$ECR_REPO_NAME" --region "$REGION" \
+        --query 'imageIds[*]' --output json 2>/dev/null || echo "[]")
+      IMAGE_COUNT=$(echo "$IMAGE_IDS" | jq 'length')
+      if [[ "$IMAGE_COUNT" -gt 0 ]]; then
+        info "Deleting $IMAGE_COUNT image(s) from ECR..."
+        aws ecr batch-delete-image \
+          --repository-name "$ECR_REPO_NAME" --region "$REGION" \
+          --image-ids "$IMAGE_IDS" > /dev/null
+      fi
+      aws ecr delete-repository \
+        --repository-name "$ECR_REPO_NAME" --region "$REGION" > /dev/null
+      success "ECR repository removed"
+    fi
+
+    info "Deleting ROLLBACK_COMPLETE stack: $STACK_PLATFORM"
+    aws cloudformation delete-stack --stack-name "$STACK_PLATFORM" --region "$REGION"
+    aws cloudformation wait stack-delete-complete \
+      --stack-name "$STACK_PLATFORM" --region "$REGION"
+    success "Stack deleted — redeploying from scratch"
+  fi
 
   # Preserve the current BackendImage parameter if the stack already exists,
   # so a re-run does not reset a real image URI back to PLACEHOLDER.
+  # AWS CLI --output text returns the literal string "None" for null/missing
+  # values, which would be passed as BackendImage=None on first run.
   EXISTING_IMAGE=$(aws cloudformation describe-stacks \
     --stack-name "$STACK_PLATFORM" --region "$REGION" \
     --query 'Stacks[0].Parameters[?ParameterKey==`BackendImage`].ParameterValue' \
     --output text 2>/dev/null || true)
+  [[ "$EXISTING_IMAGE" == "None" || "$EXISTING_IMAGE" == "PLACEHOLDER" ]] && EXISTING_IMAGE=""
   BACKEND_IMAGE_PARAM="${EXISTING_IMAGE:-PLACEHOLDER}"
 
   aws cloudformation deploy \
@@ -287,6 +326,9 @@ if [[ "$SKIP_DOCKER" == "1" ]]; then
 else
   step "Backend Docker image — build and push to ECR"
 
+  [[ -z "$ECR_URI" || "$ECR_URI" == "None" ]] && \
+    error "ECR_URI is empty — platform stack may not be deployed yet"
+
   aws ecr get-login-password --region "$REGION" \
     | docker login --username AWS --password-stdin \
         "${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com"
@@ -311,15 +353,16 @@ else
     --task-definition "$TASK_DEF_FAMILY" --region "$REGION" \
     --query 'taskDefinition' --output json)
 
+  # Target the "backend" container by name — index 0 is the postgres sidecar
   CURRENT_IMAGE=$(echo "$CURRENT_TASK_DEF" \
-    | jq -r '.containerDefinitions[0].image')
+    | jq -r '.containerDefinitions[] | select(.name == "backend") | .image')
 
   if [[ "$CURRENT_IMAGE" == "$FULL_IMAGE" ]]; then
     success "ECS task definition already uses $FULL_IMAGE — no update needed"
   else
     NEW_TASK_DEF=$(echo "$CURRENT_TASK_DEF" \
       | jq --arg img "$FULL_IMAGE" \
-           '.containerDefinitions[0].image = $img
+           '(.containerDefinitions[] | select(.name == "backend") | .image) = $img
             | del(.taskDefinitionArn, .revision, .status, .requiresAttributes,
                   .placementConstraints, .compatibilities, .registeredAt, .registeredBy)')
 
