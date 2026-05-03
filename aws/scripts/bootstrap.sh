@@ -60,7 +60,6 @@ TOPIC_PREFIX="${TOPIC_PREFIX:-health/telemetry}"
 # CA certificate files
 CA_CERT_FILE="${CA_CERT_FILE:-$PROJECT_ROOT/certificates/root-ca.pem}"
 CA_KEY_FILE="${CA_KEY_FILE:-$PROJECT_ROOT/certificates/root-ca.key}"
-APP_CONFIG_SECRET_ARN="${APP_CONFIG_SECRET_ARN:-}"
 
 # CDN / DNS config (required for 06-acm + 07-cdn steps)
 DOMAIN_NAME="${DOMAIN_NAME:-}"
@@ -280,6 +279,11 @@ CA_CERT_SECRET_ARN=$(aws secretsmanager describe-secret \
   --query 'ARN' --output text)
 success "CA cert secret ARN: $CA_CERT_SECRET_ARN"
 
+# Note: App config secret is now managed by CloudFormation (04-platform.yaml).
+# It is created automatically as part of the platform stack deployment with sensible defaults.
+# To customize: update the secret via AWS Console or AWS CLI after stack creation.
+success "App config secret will be managed by CloudFormation (04-platform.yaml)"
+
 # ─── IoT endpoint + default send-target values ───────────────────────────────
 
 IOT_ENDPOINT=$(aws iot describe-endpoint \
@@ -392,7 +396,6 @@ else
         ALBSecurityGroupId="$ALB_SG" \
         ECSSecurityGroupId="$ECS_SG" \
         CaCertSecretArn="$CA_CERT_SECRET_ARN" \
-        AppConfigSecretArn="$APP_CONFIG_SECRET_ARN" \
         DefaultHttpEndpoints="$DEFAULT_HTTP_ENDPOINTS_VAL" \
         DefaultMqttBrokerUrl="$DEFAULT_MQTT_URL_VAL" \
         DefaultMqttTopic="$TOPIC_PREFIX" \

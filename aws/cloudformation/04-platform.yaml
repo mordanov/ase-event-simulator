@@ -67,13 +67,6 @@ Parameters:
       ARN of the Secrets Manager secret containing the CA certificate and private key
       (JSON keys: cert_pem, key_pem). Created by bootstrap.sh from the JITR CA files.
 
-  AppConfigSecretArn:
-    Type: String
-    Default: ""
-    Description: >
-      Optional ARN of a Secrets Manager secret containing backend app config as either
-      dotenv text (KEY=VALUE lines) or a JSON object. Injected into APP_CONFIG_SECRET.
-
   DefaultHttpEndpoints:
     Type: String
     Default: ""
@@ -122,9 +115,6 @@ Parameters:
     AllowedValues: ["1024", "2048", "3072", "4096"]
 
 # ─── Conditions ───────────────────────────────────────────────────────────────
-
-Conditions:
-  HasAppConfigSecret: !Not [!Equals [!Ref AppConfigSecretArn, ""]]
 
 # ─── Resources ────────────────────────────────────────────────────────────────
 
@@ -183,6 +173,18 @@ Resources:
         ExcludeCharacters: "\"@/\\"
         PasswordLength: 32
 
+  AppConfigSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "/${ProjectName}/app-config"
+      Description: Backend application configuration (dotenv format).
+      SecretString: |
+        LOG_LEVEL=info
+        DEFAULT_BATCH_SIZE=10
+        DEFAULT_INTERVAL_SECONDS=5
+        DEFAULT_MAX_DEVICES=200
+        DEFAULT_ANOMALY_RATE=0.02
+
   # ══ ECS ════════════════════════════════════════════════════════════════════
 
   ECSCluster:
@@ -216,19 +218,15 @@ Resources:
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
       Policies:
-        - PolicyName: CaCertSecretAccess
+        - PolicyName: SecretsManagerAccess
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
               - Effect: Allow
                 Action: secretsmanager:GetSecretValue
-                Resource: !Ref CaCertSecretArn
-              - !If
-                - HasAppConfigSecret
-                - Effect: Allow
-                  Action: secretsmanager:GetSecretValue
-                  Resource: !Ref AppConfigSecretArn
-                - !Ref AWS::NoValue
+                Resource:
+                  - !Ref CaCertSecretArn
+                  - !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${ProjectName}/app-config*"
 
   ECSTaskRole:
     Type: AWS::IAM::Role
@@ -368,11 +366,8 @@ Resources:
               ValueFrom: !Sub "${CaCertSecretArn}:cert_pem::"
             - Name: CA_KEY_PEM
               ValueFrom: !Sub "${CaCertSecretArn}:key_pem::"
-            - !If
-              - HasAppConfigSecret
-              - Name: APP_CONFIG_SECRET
-                ValueFrom: !Ref AppConfigSecretArn
-              - !Ref AWS::NoValue
+            - Name: APP_CONFIG_SECRET
+              ValueFrom: !Ref AppConfigSecret
           LogConfiguration:
             LogDriver: awslogs
             Options:
@@ -392,6 +387,12 @@ Resources:
 # ─── Outputs ──────────────────────────────────────────────────────────────────
 
 Outputs:
+
+  AppConfigSecretArn:
+    Description: ARN of the app configuration secret.
+    Value: !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${ProjectName}/app-config"
+    Export:
+      Name: !Sub "${AWS::StackName}:AppConfigSecretArn"
 
   ECSClusterName:
     Description: ECS cluster name — passed to 05-service and used by GitHub Actions.
