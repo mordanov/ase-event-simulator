@@ -176,7 +176,7 @@ Resources:
   AppConfigSecret:
     Type: AWS::SecretsManager::Secret
     Properties:
-      Name: !Sub "/${ProjectName}/app-config"
+      Name: !Sub "/${ProjectName}/app-config-params"
       Description: Backend application configuration (dotenv format).
       SecretString: |
         LOG_LEVEL=info
@@ -224,9 +224,7 @@ Resources:
             Statement:
               - Effect: Allow
                 Action: secretsmanager:GetSecretValue
-                Resource:
-                  - !Ref CaCertSecretArn
-                  - !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${ProjectName}/app-config*"
+                Resource: !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:/${ProjectName}/*"
 
   ECSTaskRole:
     Type: AWS::IAM::Role
@@ -334,6 +332,8 @@ Resources:
               Value: "8000"
             - Name: LOG_LEVEL
               Value: info
+            - Name: SIMULATOR_CLOUD_MODE
+              Value: "true"
             - Name: SEED_DEVICE_COUNT
               Value: !Sub "${SeedDeviceCount}"
             # postgres is a sidecar — containers in the same task share the network namespace
@@ -390,7 +390,7 @@ Outputs:
 
   AppConfigSecretArn:
     Description: ARN of the app configuration secret.
-    Value: !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${ProjectName}/app-config"
+    Value: !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${ProjectName}/app-config-params"
     Export:
       Name: !Sub "${AWS::StackName}:AppConfigSecretArn"
 

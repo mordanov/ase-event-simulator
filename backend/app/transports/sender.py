@@ -29,6 +29,7 @@ from app.models.telemetry import (
     TelemetryEvent,
     TransportProtocol,
 )
+from app.services.runtime_mode import is_cloud_mode
 
 logger = logging.getLogger(__name__)
 
@@ -176,8 +177,6 @@ class AWSIoTMQTTTransport(BaseTransport):
     """
     protocol = TransportProtocol.MQTT
 
-    _ENV_CERT = os.getenv("AWS_IOT_CERT_FILE", "")
-    _ENV_KEY  = os.getenv("AWS_IOT_KEY_FILE",  "")
     _ENV_CA   = os.getenv("AWS_IOT_CA_FILE",   "")   # Amazon root CA (optional)
 
     def __init__(self, endpoint: EndpointConfig):
@@ -218,11 +217,7 @@ class AWSIoTMQTTTransport(BaseTransport):
         self._cert_files[device_id] = (cert_path, key_path)
 
     def _cert_for(self, device_id: str) -> Optional[tuple[str, str]]:
-        if device_id in self._cert_files:
-            return self._cert_files[device_id]
-        if self._ENV_CERT and self._ENV_KEY:
-            return (self._ENV_CERT, self._ENV_KEY)
-        return None
+        return self._cert_files.get(device_id)
 
     # ── MQTT5 client per device ───────────────────────────────────────────────
 
@@ -232,12 +227,17 @@ class AWSIoTMQTTTransport(BaseTransport):
 
         certs = self._cert_for(device_id)
         if not certs:
+            if is_cloud_mode():
+                logger.error("MQTT cert missing for device %s (cloud mode requires per-device cert)", device_id)
             return None
 
         try:
             from awsiot import mqtt5_client_builder
         except ImportError:
-            logger.debug("awsiotsdk not installed — MQTT will use mock fallback")
+            if is_cloud_mode():
+                logger.error("awsiotsdk is not installed in cloud mode")
+            else:
+                logger.debug("awsiotsdk not installed — MQTT will use mock fallback")
             return None
 
         cert_path, key_path = certs
@@ -285,6 +285,9 @@ class AWSIoTMQTTTransport(BaseTransport):
     async def send_event(self, event: TelemetryEvent) -> bool:
         client = await self._get_mqtt_client(event.device_id)
         if client is None:
+            if is_cloud_mode():
+                self._record(0.0, False, err="Cloud mode requires real MQTT client + per-device cert")
+                return False
             return await self._mock_publish(event.model_dump_json(), event.device_id)
         return await self._publish(client, event.device_id, event.model_dump_json())
 

@@ -30,6 +30,7 @@ from app.models.telemetry import (
     TelemetryEvent,
     TransportProtocol,
 )
+from app.services.runtime_mode import is_cloud_mode
 from app.transports.sender import AWSIoTMQTTTransport, BaseTransport, HTTPTransport, make_transport
 
 logger = logging.getLogger(__name__)
@@ -142,6 +143,8 @@ class Session:
             # Load cert PEM data and wire up mTLS on HTTP transports
             await self._register_mtls_certs(fingerprints)
         except Exception as exc:
+            if is_cloud_mode():
+                raise RuntimeError(f"Registration failed in cloud mode: {exc}") from exc
             logger.warning("Registration failed, proceeding without certs: %s", exc)
             self._devices_registered = len(device_ids)
             self._devices_pending = 0

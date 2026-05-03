@@ -21,6 +21,8 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
+from app.services.runtime_mode import is_cloud_mode
+
 CERT_VALIDITY_DAYS = int(os.getenv("CERT_VALIDITY_DAYS", "365"))
 CERT_COUNTRY = os.getenv("DEVICE_CERT_COUNTRY", "US")
 CERT_ORG = os.getenv("DEVICE_CERT_ORG", "HealthSimulator")
@@ -71,6 +73,11 @@ def load_ca() -> tuple[x509.Certificate, RSAPrivateKey]:
         ca_cert = x509.load_pem_x509_certificate(cert_pem.encode())
         ca_key  = serialization.load_pem_private_key(key_pem.encode(), password=None)
         return ca_cert, ca_key  # type: ignore[return-value]
+
+    if is_cloud_mode():
+        raise RuntimeError(
+            "Cloud mode requires CA_CERT_PEM/CA_KEY_PEM (for example from /health-simulator/ca-cert)."
+        )
 
     # Fallback: auto-generate (emits a warning — not suitable for real AWS IoT)
     import logging
