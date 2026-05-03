@@ -17,4 +17,7 @@ RUN chmod +x entrypoint.sh
 
 ENV PYTHONUNBUFFERED=1
 
+HEALTHCHECK --interval=30s --timeout=5s --start-period=180s --retries=3 \
+  CMD curl -sf http://localhost:8000/health || exit 1
+
 ENTRYPOINT ["./entrypoint.sh"]
