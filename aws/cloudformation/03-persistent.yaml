@@ -1,0 +1,123 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Health Telemetry Simulator — persistent resources.
+  ECR repository and EFS file system both use DeletionPolicy:Retain so they
+  survive platform stack recreations without causing "already exists" errors.
+  Depends on: 02-network (subnet and security group IDs for EFS mount targets).
+
+# ─── Parameters ───────────────────────────────────────────────────────────────
+
+Parameters:
+
+  ProjectName:
+    Type: String
+    Default: health-simulator
+
+  PrivateSubnet1Id:
+    Type: AWS::EC2::Subnet::Id
+    Description: Private subnet in AZ 1 for the EFS mount target (from 02-network).
+
+  PrivateSubnet2Id:
+    Type: AWS::EC2::Subnet::Id
+    Description: Private subnet in AZ 2 for the EFS mount target (from 02-network).
+
+  EFSSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: Security group that allows NFS traffic to EFS (from 02-network).
+
+# ─── Resources ────────────────────────────────────────────────────────────────
+
+Resources:
+
+  # ══ ECR ═══════════════════════════════════════════════════════════════════
+
+  ECRRepository:
+    Type: AWS::ECR::Repository
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      RepositoryName: !Sub "${ProjectName}-backend"
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {
+            "rules": [{
+              "rulePriority": 1,
+              "description": "Keep last 10 images",
+              "selection": {
+                "tagStatus": "any",
+                "countType": "imageCountMoreThan",
+                "countNumber": 10
+              },
+              "action": { "type": "expire" }
+            }]
+          }
+
+  # ══ EFS (persistent volume for the PostgreSQL sidecar) ════════════════════
+
+  EFSFileSystem:
+    Type: AWS::EFS::FileSystem
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Encrypted: true
+      PerformanceMode: generalPurpose
+      ThroughputMode: bursting
+      FileSystemTags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-postgres-data"
+
+  # Mount targets in both private subnets so ECS tasks in either AZ can reach EFS
+  EFSMountTarget1:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref EFSFileSystem
+      SubnetId: !Ref PrivateSubnet1Id
+      SecurityGroups:
+        - !Ref EFSSecurityGroupId
+
+  EFSMountTarget2:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref EFSFileSystem
+      SubnetId: !Ref PrivateSubnet2Id
+      SecurityGroups:
+        - !Ref EFSSecurityGroupId
+
+  # Access point scoped to /postgres-data, owned by UID/GID 70 (postgres user in alpine image)
+  EFSAccessPoint:
+    Type: AWS::EFS::AccessPoint
+    Properties:
+      FileSystemId: !Ref EFSFileSystem
+      PosixUser:
+        Uid: "70"
+        Gid: "70"
+      RootDirectory:
+        Path: /postgres-data
+        CreationInfo:
+          OwnerUid: "70"
+          OwnerGid: "70"
+          Permissions: "700"
+
+# ─── Outputs ──────────────────────────────────────────────────────────────────
+
+Outputs:
+
+  ECRRepositoryUri:
+    Description: ECR repository URI — push backend images here.
+    Value: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ECRRepository}"
+    Export:
+      Name: !Sub "${AWS::StackName}:ECRRepositoryUri"
+
+  EFSFileSystemId:
+    Description: EFS file system ID — passed to 04-platform for task definition volume config.
+    Value: !Ref EFSFileSystem
+    Export:
+      Name: !Sub "${AWS::StackName}:EFSFileSystemId"
+
+  EFSAccessPointId:
+    Description: EFS access point ID — passed to 04-platform for task definition volume config.
+    Value: !Ref EFSAccessPoint
+    Export:
+      Name: !Sub "${AWS::StackName}:EFSAccessPointId"

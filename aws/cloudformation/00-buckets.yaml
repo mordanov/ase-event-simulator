@@ -2,7 +2,7 @@ AWSTemplateFormatVersion: "2010-09-09"
 Description: >
   Health Telemetry Simulator — S3 buckets.
   Deploy this stack FIRST; all other stacks depend on its outputs.
-  - DeployBucket : Lambda zips + CloudFormation templates
+  - DeployBucket   : Lambda zips + CloudFormation templates
   - FrontendBucket : React static assets (private, served via CloudFront)
 
 Parameters:
@@ -83,3 +83,4 @@ Outputs:
     Value: !GetAtt FrontendBucket.Arn
     Export:
       Name: !Sub "${AWS::StackName}:FrontendBucketArn"
+

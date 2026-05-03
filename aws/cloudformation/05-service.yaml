@@ -1,0 +1,84 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Health Telemetry Simulator — ECS service stack.
+  Runs the BackendService (Fargate) and attaches it to the ALB target group.
+  Keeping the service separate from 04-platform allows redeploying or scaling
+  the service without touching the cluster, task definition, or ALB.
+  Depends on: 02-network (subnets + ECS SG), 04-platform (cluster + task def + TG).
+
+# ─── Parameters ───────────────────────────────────────────────────────────────
+
+Parameters:
+
+  ProjectName:
+    Type: String
+    Default: health-simulator
+
+  ECSClusterName:
+    Type: String
+    Description: ECS cluster name from the 04-platform stack output.
+
+  BackendTaskDefinitionFamily:
+    Type: String
+    Description: >
+      Task definition family name from the 04-platform stack output.
+      ECS always uses the latest active revision of the family.
+
+  BackendTargetGroupArn:
+    Type: String
+    Description: ALB target group ARN from the 04-platform stack output.
+
+  PublicSubnet1Id:
+    Type: AWS::EC2::Subnet::Id
+    Description: Public subnet in AZ 1 from the 02-network stack output.
+
+  PublicSubnet2Id:
+    Type: AWS::EC2::Subnet::Id
+    Description: Public subnet in AZ 2 from the 02-network stack output.
+
+  ECSSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: ECS security group from the 02-network stack output.
+
+# ─── Resources ────────────────────────────────────────────────────────────────
+
+Resources:
+
+  BackendService:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: !Sub "${ProjectName}-backend"
+      Cluster: !Ref ECSClusterName
+      TaskDefinition: !Ref BackendTaskDefinitionFamily
+      DesiredCount: 1
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          Subnets:
+            - !Ref PublicSubnet1Id
+            - !Ref PublicSubnet2Id
+          SecurityGroups:
+            - !Ref ECSSecurityGroupId
+          # Public IP needed to pull ECR images without a NAT gateway
+          AssignPublicIp: ENABLED
+      LoadBalancers:
+        - ContainerName: backend
+          ContainerPort: 8000
+          TargetGroupArn: !Ref BackendTargetGroupArn
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 100
+        MaximumPercent: 200
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+      HealthCheckGracePeriodSeconds: 300
+
+# ─── Outputs ──────────────────────────────────────────────────────────────────
+
+Outputs:
+
+  ECSServiceName:
+    Description: ECS service name — used by GitHub Actions for deployment.
+    Value: !GetAtt BackendService.Name
+    Export:
+      Name: !Sub "${AWS::StackName}:ECSServiceName"

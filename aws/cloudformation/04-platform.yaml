@@ -1,0 +1,395 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Health Telemetry Simulator — platform stack.
+  Creates ALB, ECS cluster, IAM roles, and the backend task definition.
+  BackendService lives in 05-service to allow independent redeployments.
+  Depends on: 02-network (VPC + security groups), 03-persistent (ECR + EFS).
+
+# ─── Parameters ───────────────────────────────────────────────────────────────
+
+Parameters:
+
+  ProjectName:
+    Type: String
+    Default: health-simulator
+
+  BackendImage:
+    Type: String
+    Description: >
+      Full ECR image URI with tag, e.g. <ECRRepositoryUri>:latest.
+      Set to PLACEHOLDER on first bootstrap; updated by the docker step.
+    Default: PLACEHOLDER
+
+  ECRRepositoryUri:
+    Type: String
+    Description: ECR repository URI from the 03-persistent stack output.
+
+  EFSFileSystemId:
+    Type: String
+    Description: EFS file system ID from the 03-persistent stack output.
+
+  EFSAccessPointId:
+    Type: String
+    Description: EFS access point ID from the 03-persistent stack output.
+
+  VPCId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC ID from the 02-network stack output.
+
+  PublicSubnet1Id:
+    Type: AWS::EC2::Subnet::Id
+    Description: Public subnet in AZ 1 from the 02-network stack output.
+
+  PublicSubnet2Id:
+    Type: AWS::EC2::Subnet::Id
+    Description: Public subnet in AZ 2 from the 02-network stack output.
+
+  ALBSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: ALB security group from the 02-network stack output.
+
+  ECSSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: ECS security group from the 02-network stack output.
+
+  SeedDeviceCount:
+    Type: Number
+    Default: 1000
+    Description: Number of synthetic devices seeded into the DB on startup.
+
+  CertApprovalDelaySecs:
+    Type: Number
+    Default: 5
+
+  CaCertSecretArn:
+    Type: String
+    Description: >
+      ARN of the Secrets Manager secret containing the CA certificate and private key
+      (JSON keys: cert_pem, key_pem). Created by bootstrap.sh from the JITR CA files.
+
+  DefaultHttpEndpoints:
+    Type: String
+    Default: ""
+    Description: >
+      Comma-separated name::url pairs for HTTP send targets pre-populated in the UI.
+      Example: aws-iot::https://xxx.iot.us-west-2.amazonaws.com:8443/topics/health/telemetry?qos=1
+
+  DefaultMqttBrokerUrl:
+    Type: String
+    Default: ""
+    Description: MQTT broker URL shown as default in the UI, e.g. mqtt://xxx.iot.us-west-2.amazonaws.com
+
+  DefaultMqttTopic:
+    Type: String
+    Default: "health/telemetry"
+
+  DefaultBatchSize:
+    Type: Number
+    Default: 10
+
+  DefaultIntervalSeconds:
+    Type: Number
+    Default: 5
+
+  DefaultMaxDevices:
+    Type: Number
+    Default: 200
+
+  DefaultAnomalyRate:
+    Type: String
+    Default: "0.02"
+
+  LogRetentionDays:
+    Type: Number
+    Default: 14
+    AllowedValues: [1, 3, 5, 7, 14, 30, 60, 90]
+
+  TaskCpu:
+    Type: String
+    Default: "1024"
+    AllowedValues: ["512", "1024", "2048", "4096"]
+
+  TaskMemory:
+    Type: String
+    Default: "2048"
+    AllowedValues: ["1024", "2048", "3072", "4096"]
+
+# ─── Resources ────────────────────────────────────────────────────────────────
+
+Resources:
+
+  # ══ ALB ════════════════════════════════════════════════════════════════════
+
+  ALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub "${ProjectName}-alb"
+      Scheme: internet-facing
+      Type: application
+      Subnets:
+        - !Ref PublicSubnet1Id
+        - !Ref PublicSubnet2Id
+      SecurityGroups:
+        - !Ref ALBSecurityGroupId
+
+  BackendTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub "${ProjectName}-backend-tg"
+      VpcId: !Ref VPCId
+      Protocol: HTTP
+      Port: 8000
+      TargetType: ip
+      HealthCheckPath: /health
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Matcher:
+        HttpCode: "200"
+
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref ALB
+      Protocol: HTTP
+      Port: 80
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref BackendTargetGroup
+
+  # ══ PostgreSQL credentials ═════════════════════════════════════════════════
+
+  DBSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "/${ProjectName}/db-password"
+      Description: Auto-generated PostgreSQL password for the simulator database.
+      GenerateSecretString:
+        SecretStringTemplate: '{"username": "simulator"}'
+        GenerateStringKey: password
+        ExcludeCharacters: "\"@/\\"
+        PasswordLength: 32
+
+  # ══ ECS ════════════════════════════════════════════════════════════════════
+
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub "${ProjectName}-cluster"
+      CapacityProviders:
+        - FARGATE
+        - FARGATE_SPOT
+      DefaultCapacityProviderStrategy:
+        - CapacityProvider: FARGATE
+          Weight: 1
+
+  BackendLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/ecs/${ProjectName}-backend"
+      RetentionInDays: !Ref LogRetentionDays
+
+  ECSTaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-ecs-execution-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: CaCertSecretAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref CaCertSecretArn
+
+  ECSTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-ecs-task-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: IoTPublish
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - iot:Publish
+                  - iot:Connect
+                  - iot:Subscribe
+                  - iot:Receive
+                Resource: "*"
+        - PolicyName: EFSAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - elasticfilesystem:ClientMount
+                  - elasticfilesystem:ClientWrite
+                  - elasticfilesystem:ClientRootAccess
+                Resource: !Sub "arn:aws:elasticfilesystem:${AWS::Region}:${AWS::AccountId}:file-system/${EFSFileSystemId}"
+
+  BackendTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub "${ProjectName}-backend"
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: !Ref TaskCpu
+      Memory: !Ref TaskMemory
+      NetworkMode: awsvpc
+      ExecutionRoleArn: !GetAtt ECSTaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt ECSTaskRole.Arn
+      Volumes:
+        - Name: postgres-data
+          EFSVolumeConfiguration:
+            FilesystemId: !Ref EFSFileSystemId
+            TransitEncryption: ENABLED
+            AuthorizationConfig:
+              AccessPointId: !Ref EFSAccessPointId
+              IAM: ENABLED
+      ContainerDefinitions:
+
+        # ── PostgreSQL sidecar ───────────────────────────────────────────────
+        - Name: postgres
+          Image: postgres:16-alpine
+          Essential: true
+          Environment:
+            - Name: POSTGRES_USER
+              Value: simulator
+            - Name: POSTGRES_PASSWORD
+              Value: !Sub "{{resolve:secretsmanager:${DBSecret}:SecretString:password}}"
+            - Name: POSTGRES_DB
+              Value: simulator
+            # Store data in a subdirectory so postgres can init the empty EFS mount
+            - Name: PGDATA
+              Value: /var/lib/postgresql/data/pgdata
+          MountPoints:
+            - ContainerPath: /var/lib/postgresql/data
+              SourceVolume: postgres-data
+              ReadOnly: false
+          HealthCheck:
+            Command:
+              - CMD-SHELL
+              - "pg_isready -U simulator -d simulator || exit 1"
+            Interval: 10
+            Timeout: 5
+            Retries: 5
+            StartPeriod: 30
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref BackendLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: postgres
+
+        # ── FastAPI backend ──────────────────────────────────────────────────
+        - Name: backend
+          Image: !Ref BackendImage
+          Essential: true
+          # Wait for postgres to pass its health check before starting
+          DependsOn:
+            - ContainerName: postgres
+              Condition: HEALTHY
+          PortMappings:
+            - ContainerPort: 8000
+              Protocol: tcp
+          Environment:
+            - Name: BACKEND_HOST
+              Value: "0.0.0.0"
+            - Name: BACKEND_PORT
+              Value: "8000"
+            - Name: LOG_LEVEL
+              Value: info
+            - Name: SEED_DEVICE_COUNT
+              Value: !Sub "${SeedDeviceCount}"
+            # postgres is a sidecar — containers in the same task share the network namespace
+            - Name: DATABASE_URL
+              Value: !Sub "postgresql+asyncpg://simulator:{{resolve:secretsmanager:${DBSecret}:SecretString:password}}@localhost:5432/simulator"
+            - Name: CERT_APPROVAL_DELAY_SECONDS
+              Value: !Sub "${CertApprovalDelaySecs}"
+            - Name: CERT_VALIDITY_DAYS
+              Value: "365"
+            - Name: DEVICE_CERT_COUNTRY
+              Value: US
+            - Name: DEVICE_CERT_ORG
+              Value: HealthSimulator
+            - Name: DEFAULT_HTTP_ENDPOINTS
+              Value: !Ref DefaultHttpEndpoints
+            - Name: DEFAULT_MQTT_BROKER_URL
+              Value: !Ref DefaultMqttBrokerUrl
+            - Name: DEFAULT_MQTT_TOPIC
+              Value: !Ref DefaultMqttTopic
+            - Name: DEFAULT_BATCH_SIZE
+              Value: !Sub "${DefaultBatchSize}"
+            - Name: DEFAULT_INTERVAL_SECONDS
+              Value: !Sub "${DefaultIntervalSeconds}"
+            - Name: DEFAULT_MAX_DEVICES
+              Value: !Sub "${DefaultMaxDevices}"
+            - Name: DEFAULT_ANOMALY_RATE
+              Value: !Ref DefaultAnomalyRate
+          Secrets:
+            - Name: CA_CERT_PEM
+              ValueFrom: !Sub "${CaCertSecretArn}:cert_pem::"
+            - Name: CA_KEY_PEM
+              ValueFrom: !Sub "${CaCertSecretArn}:key_pem::"
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref BackendLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: backend
+          HealthCheck:
+            Command:
+              - CMD-SHELL
+              - "curl -sf http://localhost:8000/health || exit 1"
+            Interval: 30
+            Timeout: 5
+            Retries: 3
+            # postgres startup + migrations + seed can take ~2 min combined
+            StartPeriod: 180
+
+# ─── Outputs ──────────────────────────────────────────────────────────────────
+
+Outputs:
+
+  ECSClusterName:
+    Description: ECS cluster name — passed to 05-service and used by GitHub Actions.
+    Value: !Ref ECSCluster
+    Export:
+      Name: !Sub "${AWS::StackName}:ECSClusterName"
+
+  BackendTaskDefinitionFamily:
+    Description: ECS task definition family name — passed to 05-service.
+    Value: !Sub "${ProjectName}-backend"
+    Export:
+      Name: !Sub "${AWS::StackName}:BackendTaskDefinitionFamily"
+
+  BackendTargetGroupArn:
+    Description: ALB target group ARN — passed to 05-service for load balancer attachment.
+    Value: !Ref BackendTargetGroup
+    Export:
+      Name: !Sub "${AWS::StackName}:BackendTargetGroupArn"
+
+  ALBDNSName:
+    Description: ALB DNS name — used as CloudFront origin for /api/* and /health.
+    Value: !GetAtt ALB.DNSName
+    Export:
+      Name: !Sub "${AWS::StackName}:ALBDNSName"

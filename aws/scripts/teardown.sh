@@ -3,15 +3,14 @@
 # Health Telemetry Simulator — AWS Teardown
 #
 # Deletes ALL resources created by bootstrap.sh in reverse dependency order:
-#   04-cdn      → CloudFront distribution + Route 53 record
-#   03-acm      → ACM certificate (us-east-1)
-#   02-platform → ECS, ECR, RDS, ALB, VPC
-#   01-jitr     → JITR Lambda, IoT Rule, Thing Type
-#   00-buckets  → S3 buckets (emptied first, then deleted)
-#
-# Resources with DeletionPolicy:Retain (ECR, S3 buckets) are cleaned up
-# explicitly before the CloudFormation stack is deleted.
-# RDS final snapshot is created automatically (DeletionPolicy:Snapshot).
+#   07-cdn        → CloudFront distribution + Route 53 record
+#   06-acm        → ACM certificate (us-east-1)
+#   05-service    → ECS service
+#   04-platform   → ALB, ECS cluster, task definition
+#   03-persistent → ECR (images deleted first) + EFS (mount targets deleted first)
+#   02-network    → VPC, subnets, security groups
+#   01-jitr       → JITR Lambda, IoT Rule, Thing Type
+#   00-buckets    → S3 buckets (emptied first, then deleted)
 #
 # Usage — same env vars as bootstrap.sh:
 #   cd simulator/
@@ -42,13 +41,19 @@ PROJECT_NAME="${PROJECT_NAME:-health-simulator}"
 
 STACK_BUCKETS="${STACK_BUCKETS:-${PROJECT_NAME}-buckets}"
 STACK_JITR="${STACK_JITR:-${PROJECT_NAME}-jitr}"
+STACK_NETWORK="${STACK_NETWORK:-${PROJECT_NAME}-network}"
+STACK_PERSISTENT="${STACK_PERSISTENT:-${PROJECT_NAME}-persistent}"
 STACK_PLATFORM="${STACK_PLATFORM:-${PROJECT_NAME}-platform}"
+STACK_SERVICE="${STACK_SERVICE:-${PROJECT_NAME}-service}"
 STACK_ACM="${STACK_ACM:-${PROJECT_NAME}-acm}"
 STACK_CDN="${STACK_CDN:-${PROJECT_NAME}-cdn}"
 
 SKIP_CDN="${SKIP_CDN:-0}"
 SKIP_ACM="${SKIP_ACM:-0}"
+SKIP_SERVICE="${SKIP_SERVICE:-0}"
 SKIP_PLATFORM="${SKIP_PLATFORM:-0}"
+SKIP_PERSISTENT="${SKIP_PERSISTENT:-0}"
+SKIP_NETWORK="${SKIP_NETWORK:-0}"
 SKIP_JITR="${SKIP_JITR:-0}"
 SKIP_BUCKETS="${SKIP_BUCKETS:-0}"
 
@@ -116,9 +121,7 @@ empty_bucket() {
     return 0
   fi
   info "Emptying bucket: $bucket"
-  # Delete all current objects
   run aws s3 rm "s3://${bucket}/" --recursive --region "$REGION" 2>/dev/null || true
-  # Delete all versions and delete markers in batches of 1000
   if [[ "$DRY_RUN" != "1" ]]; then
     while true; do
       BATCH=$(aws s3api list-object-versions \
@@ -171,11 +174,12 @@ echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━�
 echo -e "${RED} WARNING: This will permanently delete all simulator resources${NC}"
 echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
-echo -e "  Stacks to delete : ${YELLOW}${STACK_CDN}, ${STACK_ACM} (us-east-1), ${STACK_PLATFORM}, ${STACK_JITR}, ${STACK_BUCKETS}${NC}"
-echo -e "  ECR repository   : ${YELLOW}${PROJECT_NAME}-backend${NC} (all images deleted)"
+echo -e "  Stacks to delete : ${YELLOW}${STACK_CDN}, ${STACK_ACM} (us-east-1), ${STACK_SERVICE},${NC}"
+echo -e "                     ${YELLOW}${STACK_PLATFORM}, ${STACK_PERSISTENT}, ${STACK_NETWORK}, ${STACK_JITR}, ${STACK_BUCKETS}${NC}"
+echo -e "  ECR repository   : ${YELLOW}${PROJECT_NAME}-backend${NC} (images deleted, then repo)"
+echo -e "  EFS file system  : ${YELLOW}Mount targets + file system will be deleted${NC}"
 echo -e "  S3 buckets       : ${YELLOW}${PROJECT_NAME}-deploy-${ACCOUNT_ID}-${REGION}${NC}"
 echo -e "                     ${YELLOW}${PROJECT_NAME}-frontend-${ACCOUNT_ID}-${REGION}${NC}"
-echo -e "  EFS data         : ${YELLOW}Mount targets + file system will be deleted${NC}"
 echo ""
 
 if [[ "$DRY_RUN" != "1" ]]; then
@@ -186,120 +190,126 @@ if [[ "$DRY_RUN" != "1" ]]; then
   fi
 fi
 
-# ─── Step 1 — CloudFront + Route 53 (04-cdn) ─────────────────────────────────
+# ─── Step 1 — CloudFront + Route 53 (07-cdn) ─────────────────────────────────
 
 if [[ "$SKIP_CDN" == "1" ]]; then
-  skip "04-cdn"
+  skip "07-cdn"
 else
-  step "CloudFront + Route 53 (04-cdn)"
+  step "CloudFront + Route 53 (07-cdn)"
   delete_stack "$STACK_CDN" "$REGION"
 fi
 
-# ─── Step 2 — ACM certificate (03-acm, us-east-1) ────────────────────────────
+# ─── Step 2 — ACM certificate (06-acm, us-east-1) ────────────────────────────
 
 if [[ "$SKIP_ACM" == "1" ]]; then
-  skip "03-acm"
+  skip "06-acm"
 else
-  step "ACM Certificate (03-acm, us-east-1)"
+  step "ACM Certificate (06-acm, us-east-1)"
   delete_stack "$STACK_ACM" "us-east-1"
 fi
 
-# ─── Step 3 — Platform (02-platform) ─────────────────────────────────────────
+# ─── Step 3 — ECS service (05-service) ───────────────────────────────────────
 
-if [[ "$SKIP_PLATFORM" == "1" ]]; then
-  skip "02-platform"
+if [[ "$SKIP_SERVICE" == "1" ]]; then
+  skip "05-service"
 else
-  step "Platform — ECS / ECR / RDS / ALB / VPC (02-platform)"
+  step "ECS Service (05-service)"
 
-  # Scale ECS service to 0 before deleting the stack so CloudFormation
-  # doesn't time out waiting for tasks to drain.
+  # Scale to 0 before deleting so CloudFormation doesn't time out draining tasks.
   ECS_CLUSTER=$(stack_output "$STACK_PLATFORM" "ECSClusterName")
-  ECS_SERVICE=$(stack_output "$STACK_PLATFORM" "ECSServiceName")
-  ECR_URI=$(stack_output "$STACK_PLATFORM" "ECRRepositoryUri")
-  EFS_FS_ID=$(stack_output "$STACK_PLATFORM" "EFSFileSystemId")
-  ECR_REPO_NAME="${PROJECT_NAME}-backend"
+  ECS_SERVICE=$(stack_output "$STACK_SERVICE"  "ECSServiceName")
 
   if [[ -n "$ECS_CLUSTER" && -n "$ECS_SERVICE" ]]; then
     info "Scaling ECS service to 0 tasks..."
     run aws ecs update-service \
       --cluster "$ECS_CLUSTER" \
-      --service "$ECS_SERVICE" \
+      --service  "$ECS_SERVICE" \
       --desired-count 0 \
       --region "$REGION" > /dev/null
     if [[ "$DRY_RUN" != "1" ]]; then
       info "Waiting for ECS tasks to stop..."
       aws ecs wait services-stable \
-        --cluster "$ECS_CLUSTER" \
+        --cluster  "$ECS_CLUSTER" \
         --services "$ECS_SERVICE" \
-        --region "$REGION"
+        --region   "$REGION"
       success "ECS service drained"
     fi
   else
     warn "ECS cluster/service not found in stack outputs — skipping scale-down"
   fi
 
-  # Force-delete the ECR repository (DeletionPolicy: Retain, so CF won't touch it).
+  delete_stack "$STACK_SERVICE" "$REGION"
+fi
+
+# ─── Step 4 — Platform (04-platform) ─────────────────────────────────────────
+
+if [[ "$SKIP_PLATFORM" == "1" ]]; then
+  skip "04-platform"
+else
+  step "Platform — ALB / ECS cluster / task definition (04-platform)"
+
+  # Force-delete Secrets Manager secrets immediately (no 30-day recovery window).
+  for SECRET_ID in "/${PROJECT_NAME}/db-password" "/${PROJECT_NAME}/ca-cert"; do
+    if aws secretsmanager describe-secret \
+        --secret-id "$SECRET_ID" \
+        --region "$REGION" &>/dev/null; then
+      info "Deleting Secrets Manager secret: $SECRET_ID"
+      run aws secretsmanager delete-secret \
+        --secret-id "$SECRET_ID" \
+        --force-delete-without-recovery \
+        --region "$REGION" > /dev/null
+      [[ "$DRY_RUN" != "1" ]] && success "Secret deleted: $SECRET_ID"
+    else
+      warn "Secret $SECRET_ID not found"
+    fi
+  done
+
+  delete_stack "$STACK_PLATFORM" "$REGION"
+fi
+
+# ─── Step 5 — Persistent resources (03-persistent) ───────────────────────────
+
+if [[ "$SKIP_PERSISTENT" == "1" ]]; then
+  skip "03-persistent"
+else
+  step "Persistent resources — ECR + EFS (03-persistent)"
+
+  EFS_FS_ID=$(stack_output "$STACK_PERSISTENT" "EFSFileSystemId")
+  ECR_REPO_NAME="${PROJECT_NAME}-backend"
+
+  # Delete ECR images then the repository (DeletionPolicy:Retain, so CF leaves it).
   if aws ecr describe-repositories \
-      --repository-names "$ECR_REPO_NAME" \
-      --region "$REGION" &>/dev/null; then
+      --repository-names "$ECR_REPO_NAME" --region "$REGION" &>/dev/null; then
     if [[ "$DRY_RUN" != "1" ]]; then
-      # Delete all images first — ECR rejects repository deletion if images remain
-      # even when --force is supplied in some edge cases (replication, lifecycle).
       IMAGE_IDS=$(aws ecr list-images \
-        --repository-name "$ECR_REPO_NAME" \
-        --region "$REGION" \
-        --query 'imageIds[*]' \
-        --output json 2>/dev/null || echo "[]")
+        --repository-name "$ECR_REPO_NAME" --region "$REGION" \
+        --query 'imageIds[*]' --output json 2>/dev/null || echo "[]")
       IMAGE_COUNT=$(echo "$IMAGE_IDS" | jq 'length')
       if [[ "$IMAGE_COUNT" -gt 0 ]]; then
-        info "Deleting $IMAGE_COUNT image(s) from ECR repository: $ECR_REPO_NAME"
+        info "Deleting $IMAGE_COUNT image(s) from ECR: $ECR_REPO_NAME"
         aws ecr batch-delete-image \
-          --repository-name "$ECR_REPO_NAME" \
-          --region "$REGION" \
+          --repository-name "$ECR_REPO_NAME" --region "$REGION" \
           --image-ids "$IMAGE_IDS" > /dev/null
-        success "ECR images deleted"
-      else
-        info "ECR repository is already empty"
       fi
     else
       dry "aws ecr batch-delete-image --repository-name $ECR_REPO_NAME (all images)"
     fi
     info "Deleting ECR repository: $ECR_REPO_NAME"
     run aws ecr delete-repository \
-      --repository-name "$ECR_REPO_NAME" \
-      --region "$REGION" > /dev/null
+      --repository-name "$ECR_REPO_NAME" --region "$REGION" > /dev/null
     [[ "$DRY_RUN" != "1" ]] && success "ECR repository deleted"
   else
     warn "ECR repository $ECR_REPO_NAME not found"
   fi
 
-  # Force-delete the Secrets Manager secret immediately (no 30-day recovery window).
-  SECRET_ID="/${PROJECT_NAME}/db-password"
-  if aws secretsmanager describe-secret \
-      --secret-id "$SECRET_ID" \
-      --region "$REGION" &>/dev/null; then
-    info "Deleting Secrets Manager secret: $SECRET_ID"
-    run aws secretsmanager delete-secret \
-      --secret-id "$SECRET_ID" \
-      --force-delete-without-recovery \
-      --region "$REGION" > /dev/null
-    [[ "$DRY_RUN" != "1" ]] && success "Secret deleted"
-  else
-    warn "Secret $SECRET_ID not found"
-  fi
-
-  delete_stack "$STACK_PLATFORM" "$REGION"
-
   # Delete EFS file system (DeletionPolicy:Retain means CF leaves it behind).
   # Must delete all mount targets first; EFS rejects deletion while they exist.
-  if [[ -n "$EFS_FS_ID" ]]; then
+  if [[ -n "$EFS_FS_ID" && "$EFS_FS_ID" != "None" ]]; then
     info "Deleting EFS file system: $EFS_FS_ID"
     if [[ "$DRY_RUN" != "1" ]]; then
       MT_IDS=$(aws efs describe-mount-targets \
-        --file-system-id "$EFS_FS_ID" \
-        --region "$REGION" \
-        --query 'MountTargets[].MountTargetId' \
-        --output text 2>/dev/null || true)
+        --file-system-id "$EFS_FS_ID" --region "$REGION" \
+        --query 'MountTargets[].MountTargetId' --output text 2>/dev/null || true)
       for mt in $MT_IDS; do
         info "  Deleting mount target: $mt"
         aws efs delete-mount-target --mount-target-id "$mt" --region "$REGION"
@@ -307,10 +317,8 @@ else
       if [[ -n "$MT_IDS" ]]; then
         info "  Waiting for mount targets to be deleted..."
         until [[ $(aws efs describe-mount-targets \
-            --file-system-id "$EFS_FS_ID" \
-            --region "$REGION" \
-            --query 'length(MountTargets)' \
-            --output text 2>/dev/null) == "0" ]]; do
+            --file-system-id "$EFS_FS_ID" --region "$REGION" \
+            --query 'length(MountTargets)' --output text 2>/dev/null) == "0" ]]; do
           sleep 5
         done
       fi
@@ -323,16 +331,26 @@ else
   else
     warn "EFS file system ID not found in stack outputs — skipping EFS deletion"
   fi
+
+  delete_stack "$STACK_PERSISTENT" "$REGION"
 fi
 
-# ─── Step 4 — JITR (01-jitr) ─────────────────────────────────────────────────
+# ─── Step 6 — Network (02-network) ───────────────────────────────────────────
+
+if [[ "$SKIP_NETWORK" == "1" ]]; then
+  skip "02-network"
+else
+  step "Network — VPC / subnets / security groups (02-network)"
+  delete_stack "$STACK_NETWORK" "$REGION"
+fi
+
+# ─── Step 7 — JITR (01-jitr) ─────────────────────────────────────────────────
 
 if [[ "$SKIP_JITR" == "1" ]]; then
   skip "01-jitr"
 else
   step "JITR Lambda + IoT Rule (01-jitr)"
 
-  # Offer to deregister the IoT CA certificate (registered outside CloudFormation).
   CA_ID_FILE="$PROJECT_ROOT/aws-ca-id.txt"
   if [[ -f "$CA_ID_FILE" ]]; then
     CA_ID=$(cat "$CA_ID_FILE")
@@ -363,7 +381,7 @@ else
   delete_stack "$STACK_JITR" "$REGION"
 fi
 
-# ─── Step 5 — S3 buckets (00-buckets) ────────────────────────────────────────
+# ─── Step 8 — S3 buckets (00-buckets) ────────────────────────────────────────
 
 if [[ "$SKIP_BUCKETS" == "1" ]]; then
   skip "00-buckets"
@@ -373,16 +391,12 @@ else
   DEPLOY_BUCKET=$(stack_output "$STACK_BUCKETS" "DeployBucketName")
   FRONTEND_BUCKET=$(stack_output "$STACK_BUCKETS" "FrontendBucketName")
 
-  # Fall back to predictable names if the stack is already gone
   DEPLOY_BUCKET="${DEPLOY_BUCKET:-${PROJECT_NAME}-deploy-${ACCOUNT_ID}-${REGION}}"
   FRONTEND_BUCKET="${FRONTEND_BUCKET:-${PROJECT_NAME}-frontend-${ACCOUNT_ID}-${REGION}}"
 
   empty_bucket "$DEPLOY_BUCKET"
   empty_bucket "$FRONTEND_BUCKET"
 
-  # Delete the CloudFormation stack (DeletionPolicy: Retain means CF deletes
-  # the stack record but leaves the buckets; we already emptied them above
-  # so we delete them explicitly afterwards).
   delete_stack "$STACK_BUCKETS" "$REGION"
 
   delete_bucket "$DEPLOY_BUCKET"
@@ -399,7 +413,6 @@ echo -e "${GREEN} Teardown complete${NC}"
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
 echo -e "  Remaining manual cleanup (if any):"
-echo -e "  ${YELLOW}• EFS file system${NC} — deleted automatically if EFSFileSystemId was in stack outputs"
 echo -e "  ${YELLOW}• IoT device certs${NC} — if JITR registered device certs, delete them in IoT Core"
 echo -e "  ${YELLOW}• CloudWatch log groups${NC} — /ecs/${PROJECT_NAME}-backend, /aws/lambda/${STACK_JITR}-jitr"
 echo ""

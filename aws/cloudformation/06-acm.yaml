@@ -39,7 +39,7 @@ Resources:
 Outputs:
 
   CertificateArn:
-    Description: ARN of the ACM certificate (pass to 04-cdn.yaml as CertificateArn).
+    Description: ARN of the ACM certificate (pass to 07-cdn.yaml as CertificateArn).
     Value: !Ref Certificate
     Export:
       Name: !Sub "${AWS::StackName}:CertificateArn"

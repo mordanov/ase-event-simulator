@@ -45,7 +45,10 @@ PROJECT_NAME="${PROJECT_NAME:-health-simulator}"
 # Stack names
 STACK_BUCKETS="${STACK_BUCKETS:-${PROJECT_NAME}-buckets}"
 STACK_JITR="${STACK_JITR:-${PROJECT_NAME}-jitr}"
+STACK_NETWORK="${STACK_NETWORK:-${PROJECT_NAME}-network}"
+STACK_PERSISTENT="${STACK_PERSISTENT:-${PROJECT_NAME}-persistent}"
 STACK_PLATFORM="${STACK_PLATFORM:-${PROJECT_NAME}-platform}"
+STACK_SERVICE="${STACK_SERVICE:-${PROJECT_NAME}-service}"
 STACK_ACM="${STACK_ACM:-${PROJECT_NAME}-acm}"
 STACK_CDN="${STACK_CDN:-${PROJECT_NAME}-cdn}"
 
@@ -58,14 +61,17 @@ TOPIC_PREFIX="${TOPIC_PREFIX:-health/telemetry}"
 CA_CERT_FILE="${CA_CERT_FILE:-$PROJECT_ROOT/certificates/root-ca.pem}"
 CA_KEY_FILE="${CA_KEY_FILE:-$PROJECT_ROOT/certificates/root-ca.key}"
 
-# CDN / DNS config  (required for 03-acm + 04-cdn steps)
+# CDN / DNS config (required for 06-acm + 07-cdn steps)
 DOMAIN_NAME="${DOMAIN_NAME:-}"
 HOSTED_ZONE_ID="${HOSTED_ZONE_ID:-}"
 
 # Skip flags (set to 1 to skip a step that already completed successfully)
 SKIP_BUCKETS="${SKIP_BUCKETS:-0}"
 SKIP_JITR="${SKIP_JITR:-0}"
+SKIP_NETWORK="${SKIP_NETWORK:-0}"
+SKIP_PERSISTENT="${SKIP_PERSISTENT:-0}"
 SKIP_PLATFORM="${SKIP_PLATFORM:-0}"
+SKIP_SERVICE="${SKIP_SERVICE:-0}"
 SKIP_ACM="${SKIP_ACM:-0}"
 SKIP_CDN="${SKIP_CDN:-0}"
 SKIP_DOCKER="${SKIP_DOCKER:-0}"
@@ -130,7 +136,6 @@ FRONTEND_BUCKET_ARN=$(aws cloudformation describe-stacks \
   --stack-name "$STACK_BUCKETS" --region "$REGION" \
   --query 'Stacks[0].Outputs[?OutputKey==`FrontendBucketArn`].OutputValue' \
   --output text)
-
 success "Deploy bucket  : $DEPLOY_BUCKET"
 success "Frontend bucket: $FRONTEND_BUCKET"
 
@@ -235,54 +240,133 @@ else
   success "JITR stack deployed: $STACK_JITR"
 fi
 
-# ─── Step 2 — Platform (VPC, ECR, ECS, RDS, ALB) ─────────────────────────────
+# ─── CA cert Secrets Manager secret (created once; updated on re-runs) ───────
+#
+# The backend uses CA_CERT_PEM / CA_KEY_PEM to sign per-device X.509 certs for
+# JITR.  ECS reads these from Secrets Manager at task launch (not from disk).
+
+step "CA Cert — Secrets Manager"
+CA_SECRET_NAME="/${PROJECT_NAME}/ca-cert"
+
+CA_CERT_PEM_CONTENT=""
+CA_KEY_PEM_CONTENT=""
+[[ -f "$CA_CERT_FILE" ]] && CA_CERT_PEM_CONTENT=$(cat "$CA_CERT_FILE")
+[[ -f "$CA_KEY_FILE"  ]] && CA_KEY_PEM_CONTENT=$(cat "$CA_KEY_FILE")
+
+CA_SECRET_PAYLOAD=$(jq -n \
+  --arg cert "$CA_CERT_PEM_CONTENT" \
+  --arg key  "$CA_KEY_PEM_CONTENT" \
+  '{"cert_pem":$cert,"key_pem":$key}')
+
+if aws secretsmanager describe-secret \
+    --secret-id "$CA_SECRET_NAME" --region "$REGION" &>/dev/null; then
+  aws secretsmanager update-secret \
+    --secret-id "$CA_SECRET_NAME" \
+    --region "$REGION" \
+    --secret-string "$CA_SECRET_PAYLOAD" > /dev/null
+  success "CA cert secret updated: $CA_SECRET_NAME"
+else
+  aws secretsmanager create-secret \
+    --name "$CA_SECRET_NAME" \
+    --region "$REGION" \
+    --description "CA certificate and private key for JITR device registration" \
+    --secret-string "$CA_SECRET_PAYLOAD" > /dev/null
+  success "CA cert secret created: $CA_SECRET_NAME"
+fi
+
+CA_CERT_SECRET_ARN=$(aws secretsmanager describe-secret \
+  --secret-id "$CA_SECRET_NAME" --region "$REGION" \
+  --query 'ARN' --output text)
+success "CA cert secret ARN: $CA_CERT_SECRET_ARN"
+
+# ─── IoT endpoint + default send-target values ───────────────────────────────
+
+IOT_ENDPOINT=$(aws iot describe-endpoint \
+  --endpoint-type iot:Data-ATS --region "$REGION" \
+  --query 'endpointAddress' --output text 2>/dev/null || echo "")
+[[ "$IOT_ENDPOINT" == "None" ]] && IOT_ENDPOINT=""
+
+DEFAULT_HTTP_ENDPOINTS_VAL=""
+DEFAULT_MQTT_URL_VAL=""
+if [[ -n "$IOT_ENDPOINT" ]]; then
+  DEFAULT_HTTP_ENDPOINTS_VAL="aws-iot::https://${IOT_ENDPOINT}:8443/topics/${TOPIC_PREFIX}?qos=1"
+  DEFAULT_MQTT_URL_VAL="mqtt://${IOT_ENDPOINT}"
+fi
+
+# ─── Step 2 — Network (VPC, subnets, security groups) ────────────────────────
+
+if [[ "$SKIP_NETWORK" == "1" ]]; then
+  skip "02-network (SKIP_NETWORK=1)"
+else
+  step "Network — VPC / subnets / security groups (02-network)"
+  aws cloudformation deploy \
+    --template-file "$CF_DIR/02-network.yaml" \
+    --stack-name "$STACK_NETWORK" \
+    --region "$REGION" \
+    --parameter-overrides ProjectName="$PROJECT_NAME" \
+    --no-fail-on-empty-changeset
+  success "Network stack deployed: $STACK_NETWORK"
+fi
+
+NET() { aws cloudformation describe-stacks --stack-name "$STACK_NETWORK" --region "$REGION" \
+          --query "Stacks[0].Outputs[?OutputKey==\`$1\`].OutputValue" --output text; }
+VPC_ID=$(NET VPCId)
+PUBLIC_SUBNET_1=$(NET PublicSubnet1Id)
+PUBLIC_SUBNET_2=$(NET PublicSubnet2Id)
+PRIVATE_SUBNET_1=$(NET PrivateSubnet1Id)
+PRIVATE_SUBNET_2=$(NET PrivateSubnet2Id)
+ALB_SG=$(NET ALBSecurityGroupId)
+ECS_SG=$(NET ECSSecurityGroupId)
+EFS_SG=$(NET EFSSecurityGroupId)
+
+# ─── Step 3 — Persistent resources (ECR, EFS) ────────────────────────────────
+
+if [[ "$SKIP_PERSISTENT" == "1" ]]; then
+  skip "03-persistent (SKIP_PERSISTENT=1)"
+else
+  step "Persistent resources — ECR + EFS (03-persistent)"
+  aws cloudformation deploy \
+    --template-file "$CF_DIR/03-persistent.yaml" \
+    --stack-name "$STACK_PERSISTENT" \
+    --region "$REGION" \
+    --parameter-overrides \
+        ProjectName="$PROJECT_NAME" \
+        PrivateSubnet1Id="$PRIVATE_SUBNET_1" \
+        PrivateSubnet2Id="$PRIVATE_SUBNET_2" \
+        EFSSecurityGroupId="$EFS_SG" \
+    --no-fail-on-empty-changeset
+  success "Persistent stack deployed: $STACK_PERSISTENT"
+fi
+
+PERS() { aws cloudformation describe-stacks --stack-name "$STACK_PERSISTENT" --region "$REGION" \
+           --query "Stacks[0].Outputs[?OutputKey==\`$1\`].OutputValue" --output text; }
+ECR_URI=$(PERS ECRRepositoryUri)
+EFS_FS_ID=$(PERS EFSFileSystemId)
+EFS_AP_ID=$(PERS EFSAccessPointId)
+success "ECR repository : $ECR_URI"
+
+# ─── Step 4 — Platform (ALB, ECS cluster, task definition) ───────────────────
 
 if [[ "$SKIP_PLATFORM" == "1" ]]; then
-  skip "02-platform (SKIP_PLATFORM=1)"
+  skip "04-platform (SKIP_PLATFORM=1)"
 else
-  step "Platform — VPC / ECR / ECS / RDS / ALB (02-platform)"
-  info "This step provisions ECS and EFS; it may take 5-10 minutes..."
+  step "Platform — ALB / ECS cluster / task definition (04-platform)"
+  info "This step may take a few minutes..."
 
-  # ── ROLLBACK_COMPLETE recovery ──────────────────────────────────────────────
-  # A stack in ROLLBACK_COMPLETE cannot be updated — it must be deleted first.
-  # Resources with DeletionPolicy:Retain (ECR, EFS) are left behind by CF, which
-  # causes "already exists" errors on the next create attempt. Clean them up here.
+  # Handle ROLLBACK_COMPLETE — stack must be deleted before redeployment
   STACK_STATUS=$(aws cloudformation describe-stacks \
     --stack-name "$STACK_PLATFORM" --region "$REGION" \
     --query 'Stacks[0].StackStatus' --output text 2>/dev/null || echo "DOES_NOT_EXIST")
-
   if [[ "$STACK_STATUS" == "ROLLBACK_COMPLETE" ]]; then
-    warn "Stack $STACK_PLATFORM is in ROLLBACK_COMPLETE — cleaning up before redeployment"
-
-    ECR_REPO_NAME="${PROJECT_NAME}-backend"
-    if aws ecr describe-repositories \
-        --repository-names "$ECR_REPO_NAME" --region "$REGION" &>/dev/null; then
-      IMAGE_IDS=$(aws ecr list-images \
-        --repository-name "$ECR_REPO_NAME" --region "$REGION" \
-        --query 'imageIds[*]' --output json 2>/dev/null || echo "[]")
-      IMAGE_COUNT=$(echo "$IMAGE_IDS" | jq 'length')
-      if [[ "$IMAGE_COUNT" -gt 0 ]]; then
-        info "Deleting $IMAGE_COUNT image(s) from ECR..."
-        aws ecr batch-delete-image \
-          --repository-name "$ECR_REPO_NAME" --region "$REGION" \
-          --image-ids "$IMAGE_IDS" > /dev/null
-      fi
-      aws ecr delete-repository \
-        --repository-name "$ECR_REPO_NAME" --region "$REGION" > /dev/null
-      success "ECR repository removed"
-    fi
-
-    info "Deleting ROLLBACK_COMPLETE stack: $STACK_PLATFORM"
+    warn "Stack $STACK_PLATFORM is in ROLLBACK_COMPLETE — deleting before redeployment"
     aws cloudformation delete-stack --stack-name "$STACK_PLATFORM" --region "$REGION"
     aws cloudformation wait stack-delete-complete \
       --stack-name "$STACK_PLATFORM" --region "$REGION"
     success "Stack deleted — redeploying from scratch"
   fi
 
-  # Preserve the current BackendImage parameter if the stack already exists,
-  # so a re-run does not reset a real image URI back to PLACEHOLDER.
-  # AWS CLI --output text returns the literal string "None" for null/missing
-  # values, which would be passed as BackendImage=None on first run.
+  # Preserve BackendImage on re-runs so a real image is not reset to PLACEHOLDER.
+  # AWS CLI --output text returns "None" for null/missing values.
   EXISTING_IMAGE=$(aws cloudformation describe-stacks \
     --stack-name "$STACK_PLATFORM" --region "$REGION" \
     --query 'Stacks[0].Parameters[?ParameterKey==`BackendImage`].ParameterValue' \
@@ -291,35 +375,37 @@ else
   BACKEND_IMAGE_PARAM="${EXISTING_IMAGE:-PLACEHOLDER}"
 
   aws cloudformation deploy \
-    --template-file "$CF_DIR/02-platform.yaml" \
+    --template-file "$CF_DIR/04-platform.yaml" \
     --stack-name "$STACK_PLATFORM" \
     --region "$REGION" \
     --capabilities CAPABILITY_NAMED_IAM \
     --parameter-overrides \
         ProjectName="$PROJECT_NAME" \
         BackendImage="$BACKEND_IMAGE_PARAM" \
+        ECRRepositoryUri="$ECR_URI" \
+        EFSFileSystemId="$EFS_FS_ID" \
+        EFSAccessPointId="$EFS_AP_ID" \
+        VPCId="$VPC_ID" \
+        PublicSubnet1Id="$PUBLIC_SUBNET_1" \
+        PublicSubnet2Id="$PUBLIC_SUBNET_2" \
+        ALBSecurityGroupId="$ALB_SG" \
+        ECSSecurityGroupId="$ECS_SG" \
+        CaCertSecretArn="$CA_CERT_SECRET_ARN" \
+        DefaultHttpEndpoints="$DEFAULT_HTTP_ENDPOINTS_VAL" \
+        DefaultMqttBrokerUrl="$DEFAULT_MQTT_URL_VAL" \
+        DefaultMqttTopic="$TOPIC_PREFIX" \
     --no-fail-on-empty-changeset
   success "Platform stack deployed: $STACK_PLATFORM"
 fi
 
-ECR_URI=$(aws cloudformation describe-stacks \
-  --stack-name "$STACK_PLATFORM" --region "$REGION" \
-  --query 'Stacks[0].Outputs[?OutputKey==`ECRRepositoryUri`].OutputValue' \
-  --output text)
-ECS_CLUSTER=$(aws cloudformation describe-stacks \
-  --stack-name "$STACK_PLATFORM" --region "$REGION" \
-  --query 'Stacks[0].Outputs[?OutputKey==`ECSClusterName`].OutputValue' \
-  --output text)
-ECS_SERVICE=$(aws cloudformation describe-stacks \
-  --stack-name "$STACK_PLATFORM" --region "$REGION" \
-  --query 'Stacks[0].Outputs[?OutputKey==`ECSServiceName`].OutputValue' \
-  --output text)
-ALB_DNS=$(aws cloudformation describe-stacks \
-  --stack-name "$STACK_PLATFORM" --region "$REGION" \
-  --query 'Stacks[0].Outputs[?OutputKey==`ALBDNSName`].OutputValue' \
-  --output text)
+PLAT() { aws cloudformation describe-stacks --stack-name "$STACK_PLATFORM" --region "$REGION" \
+           --query "Stacks[0].Outputs[?OutputKey==\`$1\`].OutputValue" --output text; }
+ECS_CLUSTER=$(PLAT ECSClusterName)
+ALB_DNS=$(PLAT ALBDNSName)
+TASK_DEF_FAMILY=$(PLAT BackendTaskDefinitionFamily)
+TARGET_GROUP_ARN=$(PLAT BackendTargetGroupArn)
 
-# ─── Step 3 — Build + push backend Docker image ──────────────────────────────
+# ─── Step 5 — Docker build + push ────────────────────────────────────────────
 
 if [[ "$SKIP_DOCKER" == "1" ]]; then
   skip "Docker build+push (SKIP_DOCKER=1)"
@@ -327,7 +413,7 @@ else
   step "Backend Docker image — build and push to ECR"
 
   [[ -z "$ECR_URI" || "$ECR_URI" == "None" ]] && \
-    error "ECR_URI is empty — platform stack may not be deployed yet"
+    error "ECR_URI is empty — persistent stack may not be deployed yet"
 
   aws ecr get-login-password --region "$REGION" \
     | docker login --username AWS --password-stdin \
@@ -346,57 +432,74 @@ else
   docker push "$FULL_IMAGE"
   success "Backend image pushed: $FULL_IMAGE"
 
-  # Only register a new task definition revision and redeploy if the image
-  # stored in the current task definition differs from what we just pushed.
-  TASK_DEF_FAMILY="${PROJECT_NAME}-backend"
-  CURRENT_TASK_DEF=$(aws ecs describe-task-definition \
-    --task-definition "$TASK_DEF_FAMILY" --region "$REGION" \
-    --query 'taskDefinition' --output json)
-
-  # Target the "backend" container by name — index 0 is the postgres sidecar
-  CURRENT_IMAGE=$(echo "$CURRENT_TASK_DEF" \
-    | jq -r '.containerDefinitions[] | select(.name == "backend") | .image')
-
-  if [[ "$CURRENT_IMAGE" == "$FULL_IMAGE" ]]; then
-    success "ECS task definition already uses $FULL_IMAGE — no update needed"
-  else
-    NEW_TASK_DEF=$(echo "$CURRENT_TASK_DEF" \
-      | jq --arg img "$FULL_IMAGE" \
-           '(.containerDefinitions[] | select(.name == "backend") | .image) = $img
-            | del(.taskDefinitionArn, .revision, .status, .requiresAttributes,
-                  .placementConstraints, .compatibilities, .registeredAt, .registeredBy)')
-
-    NEW_REVISION=$(aws ecs register-task-definition \
-      --region "$REGION" \
-      --cli-input-json "$NEW_TASK_DEF" \
-      --query 'taskDefinition.taskDefinitionArn' \
-      --output text)
-    success "New task definition: $NEW_REVISION"
-
-    aws ecs update-service \
-      --cluster "$ECS_CLUSTER" \
-      --service "$ECS_SERVICE" \
-      --task-definition "$NEW_REVISION" \
-      --region "$REGION" \
-      --force-new-deployment > /dev/null
-    success "ECS service update triggered"
-  fi
+  # Update the platform stack with the real image URI so CloudFormation owns
+  # the task definition revision.
+  info "Updating platform stack with new image..."
+  aws cloudformation deploy \
+    --template-file "$CF_DIR/04-platform.yaml" \
+    --stack-name "$STACK_PLATFORM" \
+    --region "$REGION" \
+    --capabilities CAPABILITY_NAMED_IAM \
+    --parameter-overrides \
+        BackendImage="$FULL_IMAGE" \
+        CaCertSecretArn="$CA_CERT_SECRET_ARN" \
+        DefaultHttpEndpoints="$DEFAULT_HTTP_ENDPOINTS_VAL" \
+        DefaultMqttBrokerUrl="$DEFAULT_MQTT_URL_VAL" \
+        DefaultMqttTopic="$TOPIC_PREFIX" \
+    --no-fail-on-empty-changeset
+  success "Platform stack updated: BackendImage=$FULL_IMAGE"
 fi
 
-# ─── Step 4 — ACM certificate (us-east-1) ────────────────────────────────────
+# ─── Step 6 — ECS service ────────────────────────────────────────────────────
+
+if [[ "$SKIP_SERVICE" == "1" ]]; then
+  skip "05-service (SKIP_SERVICE=1)"
+else
+  step "ECS service (05-service)"
+  aws cloudformation deploy \
+    --template-file "$CF_DIR/05-service.yaml" \
+    --stack-name "$STACK_SERVICE" \
+    --region "$REGION" \
+    --parameter-overrides \
+        ProjectName="$PROJECT_NAME" \
+        ECSClusterName="$ECS_CLUSTER" \
+        BackendTaskDefinitionFamily="$TASK_DEF_FAMILY" \
+        BackendTargetGroupArn="$TARGET_GROUP_ARN" \
+        PublicSubnet1Id="$PUBLIC_SUBNET_1" \
+        PublicSubnet2Id="$PUBLIC_SUBNET_2" \
+        ECSSecurityGroupId="$ECS_SG" \
+    --no-fail-on-empty-changeset
+  success "Service stack deployed: $STACK_SERVICE"
+fi
+
+ECS_SERVICE=$(aws cloudformation describe-stacks \
+  --stack-name "$STACK_SERVICE" --region "$REGION" \
+  --query 'Stacks[0].Outputs[?OutputKey==`ECSServiceName`].OutputValue' \
+  --output text 2>/dev/null || true)
+
+# Force a redeployment when docker pushed a new image (skip was not set).
+if [[ "$SKIP_DOCKER" != "1" && -n "$ECS_CLUSTER" && -n "$ECS_SERVICE" ]]; then
+  aws ecs update-service \
+    --cluster "$ECS_CLUSTER" \
+    --service "$ECS_SERVICE" \
+    --region "$REGION" \
+    --force-new-deployment > /dev/null
+  success "ECS deployment triggered"
+fi
+
+# ─── Step 7 — ACM certificate (us-east-1) ────────────────────────────────────
 
 if [[ "$SKIP_ACM" == "1" ]]; then
-  skip "03-acm (SKIP_ACM=1)"
+  skip "06-acm (SKIP_ACM=1)"
 elif [[ -z "$DOMAIN_NAME" || -z "$HOSTED_ZONE_ID" ]]; then
   warn "DOMAIN_NAME or HOSTED_ZONE_ID not set — skipping ACM + CDN steps."
-  warn "Re-run with: DOMAIN_NAME=your.domain.com HOSTED_ZONE_ID=Z... SKIP_BUCKETS=1 SKIP_JITR=1 SKIP_PLATFORM=1 SKIP_DOCKER=1 ./aws/scripts/bootstrap.sh"
+  warn "Re-run with: DOMAIN_NAME=your.domain.com HOSTED_ZONE_ID=Z... SKIP_BUCKETS=1 SKIP_JITR=1 SKIP_NETWORK=1 SKIP_PERSISTENT=1 SKIP_PLATFORM=1 SKIP_DOCKER=1 SKIP_SERVICE=1 ./aws/scripts/bootstrap.sh"
   SKIP_ACM=1
   SKIP_CDN=1
 else
-  step "ACM Certificate — us-east-1 (03-acm)"
-  # CloudFront requires certificates from us-east-1 regardless of app region
+  step "ACM Certificate — us-east-1 (06-acm)"
   aws cloudformation deploy \
-    --template-file "$CF_DIR/03-acm.yaml" \
+    --template-file "$CF_DIR/06-acm.yaml" \
     --stack-name "$STACK_ACM" \
     --region us-east-1 \
     --parameter-overrides \
@@ -406,12 +509,12 @@ else
   success "ACM stack deployed: $STACK_ACM (us-east-1)"
 fi
 
-# ─── Step 5 — CloudFront + Route 53 ──────────────────────────────────────────
+# ─── Step 8 — CloudFront + Route 53 ──────────────────────────────────────────
 
 if [[ "${SKIP_CDN:-0}" == "1" ]]; then
-  skip "04-cdn (SKIP_CDN=1 or DOMAIN_NAME not set)"
+  skip "07-cdn (SKIP_CDN=1 or DOMAIN_NAME not set)"
 else
-  step "CloudFront + Route 53 (04-cdn)"
+  step "CloudFront + Route 53 (07-cdn)"
 
   CERT_ARN=$(aws cloudformation describe-stacks \
     --stack-name "$STACK_ACM" --region us-east-1 \
@@ -419,7 +522,7 @@ else
     --output text)
 
   aws cloudformation deploy \
-    --template-file "$CF_DIR/04-cdn.yaml" \
+    --template-file "$CF_DIR/07-cdn.yaml" \
     --stack-name "$STACK_CDN" \
     --region "$REGION" \
     --parameter-overrides \
@@ -437,8 +540,22 @@ else
     --query 'Stacks[0].Outputs[?OutputKey==`CloudFrontDistributionId`].OutputValue' \
     --output text)
 
-  # ── Upload frontend build (if dist/ exists) ───────────────────────────────
+  # ── Build frontend ────────────────────────────────────────────────────────
+  # Runs npm run build so the production bundle uses relative API paths
+  # (VITE_API_BASE_URL is empty in .env.production → CloudFront routes /api/*).
+  # Skip with SKIP_FRONTEND_BUILD=1 if you already have a fresh dist/.
+  SKIP_FRONTEND_BUILD="${SKIP_FRONTEND_BUILD:-0}"
   FRONTEND_DIST="$PROJECT_ROOT/frontend/dist"
+  if [[ "$SKIP_FRONTEND_BUILD" == "1" ]]; then
+    skip "Frontend build (SKIP_FRONTEND_BUILD=1)"
+    [[ -d "$FRONTEND_DIST" ]] || warn "frontend/dist/ not found — upload may be empty"
+  else
+    info "Building frontend..."
+    (cd "$PROJECT_ROOT/frontend" && npm install --silent && npm run build)
+    success "Frontend built → $FRONTEND_DIST"
+  fi
+
+  # ── Upload frontend build (if dist/ exists) ───────────────────────────────
   if [[ -d "$FRONTEND_DIST" ]]; then
     info "Uploading frontend build to s3://${FRONTEND_BUCKET}/ ..."
     SYNC_OUTPUT=$(aws s3 sync "$FRONTEND_DIST/" "s3://${FRONTEND_BUCKET}/" \
@@ -447,14 +564,12 @@ else
       --cache-control "public,max-age=31536000,immutable" \
       --exclude "index.html" \
       --exclude "manifest.json")
-    # index.html and manifest.json must not be cached long-term
     IDX_OUTPUT=$(aws s3 cp "$FRONTEND_DIST/index.html" "s3://${FRONTEND_BUCKET}/index.html" \
       --region "$REGION" \
       --cache-control "no-cache,no-store,must-revalidate")
     aws s3 cp "$FRONTEND_DIST/manifest.json" "s3://${FRONTEND_BUCKET}/manifest.json" \
       --region "$REGION" \
       --cache-control "no-cache,no-store,must-revalidate" 2>/dev/null || true
-    # Only invalidate if any files were actually uploaded or deleted
     if [[ -n "$SYNC_OUTPUT" || "$IDX_OUTPUT" == *"upload"* ]]; then
       aws cloudfront create-invalidation \
         --distribution-id "$CF_DIST_ID" \
@@ -464,7 +579,7 @@ else
       success "Frontend S3 already up to date — no invalidation needed"
     fi
   else
-    warn "frontend/dist/ not found — run 'cd frontend && npm run build' then re-run with SKIP_BUCKETS=1 SKIP_JITR=1 SKIP_PLATFORM=1 SKIP_DOCKER=1 SKIP_ACM=1"
+    warn "frontend/dist/ not found — run 'cd frontend && npm run build' then re-run with SKIP_BUCKETS=1 SKIP_JITR=1 SKIP_NETWORK=1 SKIP_PERSISTENT=1 SKIP_PLATFORM=1 SKIP_DOCKER=1 SKIP_SERVICE=1 SKIP_ACM=1"
   fi
 fi
 
