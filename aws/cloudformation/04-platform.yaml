@@ -249,6 +249,20 @@ Resources:
                   - iot:Subscribe
                   - iot:Receive
                 Resource: "*"
+              - Effect: Allow
+                Action:
+                  - iot:RegisterCertificateWithoutCA
+                  - iot:CreateThing
+                  - iot:DescribeThing
+                  - iot:AttachPolicy
+                  - iot:AttachThingPrincipal
+                  - iot:GetPolicy
+                  - iot:CreatePolicy
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - sts:GetCallerIdentity
+                Resource: "*"
         - PolicyName: EFSAccess
           PolicyDocument:
             Version: "2012-10-17"

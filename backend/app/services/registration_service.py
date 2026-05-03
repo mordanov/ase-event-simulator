@@ -36,12 +36,16 @@ CERT_APPROVAL_DELAY: float = float(os.getenv("CERT_APPROVAL_DELAY_SECONDS", "5")
 IOT_POLICY_NAME = os.getenv("AWS_IOT_POLICY_NAME", "HealthSimulatorDevicePolicy")
 IOT_THING_TYPE = os.getenv("AWS_IOT_THING_TYPE", "HealthSimulatorDevice")
 IOT_TOPIC_PREFIX = os.getenv("AWS_IOT_TOPIC_PREFIX", os.getenv("DEFAULT_MQTT_TOPIC", "health/telemetry"))
+IOT_REGISTRATION_MODE = os.getenv("AWS_IOT_REGISTRATION_MODE", "direct").strip().lower()
 
 # Registration status constants
 STATUS_UNREGISTERED = "unregistered"
 STATUS_PENDING      = "pending"
 STATUS_REGISTERED   = "registered"
 STATUS_REJECTED     = "rejected"   # permanent rejection (not used in simulation, for future use)
+
+REG_MODE_DIRECT = "direct"
+REG_MODE_JITR = "jitr"
 
 
 # ─── Event callback type ──────────────────────────────────────────────────────
@@ -106,9 +110,25 @@ async def register_devices(
             )
         await db.commit()
 
-    # In cloud mode we must provision in AWS IoT Core (no simulated registration path).
+    # In cloud mode, registration behavior is controlled explicitly via
+    # AWS_IOT_REGISTRATION_MODE=direct|jitr.
     if is_cloud_mode():
-        await _register_devices_in_aws(needs_registration, cert_map, on_event)
+        reg_mode = _get_iot_registration_mode()
+
+        if reg_mode == REG_MODE_DIRECT:
+            await _register_devices_in_aws(needs_registration, cert_map, on_event)
+        else:
+            # Strict JITR mode: do not call RegisterCertificateWithoutCA.
+            # Certs are generated/stored here; first MQTT mTLS connect triggers
+            # IoT JITR rule + Lambda activation/thing creation.
+            for d in needs_registration:
+                _emit(
+                    on_event,
+                    d.device_id,
+                    STATUS_PENDING,
+                    "awaiting AWS IoT JITR activation on first MQTT mTLS connect",
+                )
+
         for d in needs_registration:
             dc = cert_map[d.device_id]
             fingerprints[d.device_id] = dc.fingerprint
@@ -149,6 +169,16 @@ def _emit(cb: RegistrationCallback | None, device_id: str, status: str, msg: str
     logger.info("[reg] %s → %s: %s", device_id, status, msg)
     if cb:
         cb(device_id, status, msg)
+
+
+def _get_iot_registration_mode() -> str:
+    mode = IOT_REGISTRATION_MODE
+    if mode not in {REG_MODE_DIRECT, REG_MODE_JITR}:
+        raise RuntimeError(
+            "Invalid AWS_IOT_REGISTRATION_MODE. Expected 'direct' or 'jitr', "
+            f"got: {mode!r}"
+        )
+    return mode
 
 
 def _default_iot_policy_document() -> str:
