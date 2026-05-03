@@ -477,8 +477,9 @@ ECS_SERVICE=$(aws cloudformation describe-stacks \
   --query 'Stacks[0].Outputs[?OutputKey==`ECSServiceName`].OutputValue' \
   --output text 2>/dev/null || true)
 
-# Force a redeployment when docker pushed a new image (skip was not set).
-if [[ "$SKIP_DOCKER" != "1" && -n "$ECS_CLUSTER" && -n "$ECS_SERVICE" ]]; then
+# Force a redeployment whenever the platform stack or docker image was updated
+# so the running task picks up any new env vars or a new image.
+if [[ ("$SKIP_DOCKER" != "1" || "$SKIP_PLATFORM" != "1") && -n "$ECS_CLUSTER" && -n "$ECS_SERVICE" ]]; then
   aws ecs update-service \
     --cluster "$ECS_CLUSTER" \
     --service "$ECS_SERVICE" \
