@@ -14,6 +14,10 @@ import uuid
 from sqlalchemy import create_engine, func, select, text
 from sqlalchemy.orm import Session
 
+from app.env_loader import bootstrap_environment
+
+bootstrap_environment()
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------

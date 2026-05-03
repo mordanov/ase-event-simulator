@@ -67,6 +67,13 @@ Parameters:
       ARN of the Secrets Manager secret containing the CA certificate and private key
       (JSON keys: cert_pem, key_pem). Created by bootstrap.sh from the JITR CA files.
 
+  AppConfigSecretArn:
+    Type: String
+    Default: ""
+    Description: >
+      Optional ARN of a Secrets Manager secret containing backend app config as either
+      dotenv text (KEY=VALUE lines) or a JSON object. Injected into APP_CONFIG_SECRET.
+
   DefaultHttpEndpoints:
     Type: String
     Default: ""
@@ -113,6 +120,11 @@ Parameters:
     Type: String
     Default: "2048"
     AllowedValues: ["1024", "2048", "3072", "4096"]
+
+# ─── Conditions ───────────────────────────────────────────────────────────────
+
+Conditions:
+  HasAppConfigSecret: !Not [!Equals [!Ref AppConfigSecretArn, ""]]
 
 # ─── Resources ────────────────────────────────────────────────────────────────
 
@@ -211,6 +223,12 @@ Resources:
               - Effect: Allow
                 Action: secretsmanager:GetSecretValue
                 Resource: !Ref CaCertSecretArn
+              - !If
+                - HasAppConfigSecret
+                - Effect: Allow
+                  Action: secretsmanager:GetSecretValue
+                  Resource: !Ref AppConfigSecretArn
+                - !Ref AWS::NoValue
 
   ECSTaskRole:
     Type: AWS::IAM::Role
@@ -350,6 +368,11 @@ Resources:
               ValueFrom: !Sub "${CaCertSecretArn}:cert_pem::"
             - Name: CA_KEY_PEM
               ValueFrom: !Sub "${CaCertSecretArn}:key_pem::"
+            - !If
+              - HasAppConfigSecret
+              - Name: APP_CONFIG_SECRET
+                ValueFrom: !Ref AppConfigSecretArn
+              - !Ref AWS::NoValue
           LogConfiguration:
             LogDriver: awslogs
             Options:

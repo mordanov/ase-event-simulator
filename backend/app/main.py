@@ -9,6 +9,9 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import router
 from app.api.session import session_manager
+from app.env_loader import bootstrap_environment
+
+bootstrap_environment()
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "info").upper(),

@@ -5,6 +5,10 @@ import os
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
+from app.env_loader import bootstrap_environment
+
+bootstrap_environment()
+
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
     "postgresql+asyncpg://simulator:simulator@db:5432/simulator",

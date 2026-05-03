@@ -60,6 +60,7 @@ TOPIC_PREFIX="${TOPIC_PREFIX:-health/telemetry}"
 # CA certificate files
 CA_CERT_FILE="${CA_CERT_FILE:-$PROJECT_ROOT/certificates/root-ca.pem}"
 CA_KEY_FILE="${CA_KEY_FILE:-$PROJECT_ROOT/certificates/root-ca.key}"
+APP_CONFIG_SECRET_ARN="${APP_CONFIG_SECRET_ARN:-}"
 
 # CDN / DNS config (required for 06-acm + 07-cdn steps)
 DOMAIN_NAME="${DOMAIN_NAME:-}"
@@ -391,6 +392,7 @@ else
         ALBSecurityGroupId="$ALB_SG" \
         ECSSecurityGroupId="$ECS_SG" \
         CaCertSecretArn="$CA_CERT_SECRET_ARN" \
+        AppConfigSecretArn="$APP_CONFIG_SECRET_ARN" \
         DefaultHttpEndpoints="$DEFAULT_HTTP_ENDPOINTS_VAL" \
         DefaultMqttBrokerUrl="$DEFAULT_MQTT_URL_VAL" \
         DefaultMqttTopic="$TOPIC_PREFIX" \
