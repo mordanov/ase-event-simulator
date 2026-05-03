@@ -13,15 +13,7 @@ const DEFAULT_CONFIG: SessionConfig = {
   interval_seconds: 5,
   anomaly_rate: 0.1,
   total_events: null,
-  endpoints: [
-    {
-      name: 'Local API',
-      url: 'http://localhost:9000/ingest',
-      protocol: 'http',
-      enabled: true,
-      headers: {},
-    },
-  ],
+  endpoints: [],
   protocols: ['http'],
 };
 

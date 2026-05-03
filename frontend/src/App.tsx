@@ -50,7 +50,7 @@ export default function App() {
               ⚠ Backend unreachable — start the Python API server
             </div>
           )}
-          <a href="http://localhost:8000/docs" target="_blank" rel="noreferrer" style={styles.docsLink}>
+          <a href="/docs" target="_blank" rel="noreferrer" style={styles.docsLink}>
             API Docs ↗
           </a>
         </div>
