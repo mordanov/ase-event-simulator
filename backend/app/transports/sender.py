@@ -70,9 +70,10 @@ class BaseTransport(ABC):
     async def send_batch(self, batch: BatchPayload) -> bool:
         ...
 
-    async def send_registration_event(self, event: RegistrationEvent) -> bool:
-        """Send a registration event to the endpoint. Default: no-op for mock transports."""
-        return True
+    async def send_registration_event(self, event: RegistrationEvent) -> dict:
+        """Send a registration event. Returns {"name", "url", "status_code", "body"}."""
+        return {"name": self.endpoint.name, "url": self.endpoint.url,
+                "status_code": None, "body": "(mock transport — not sent)"}
 
 
 # ─── HTTP ─────────────────────────────────────────────────────────────────────
@@ -135,20 +136,21 @@ class HTTPTransport(BaseTransport):
             logger.warning("HTTP send_event failed [%s]: %s", self.endpoint.url, exc)
             return False
 
-    async def send_registration_event(self, event: RegistrationEvent) -> bool:
+    async def send_registration_event(self, event: RegistrationEvent) -> dict:
         client = await self._get_client()
         t0 = time.perf_counter()
+        base = {"name": self.endpoint.name, "url": self.endpoint.url}
         try:
             resp = await client.post(self.endpoint.url, content=event.model_dump_json())
             latency = (time.perf_counter() - t0) * 1000
             ok = resp.status_code < 400
             self._record(latency, ok, code=resp.status_code)
-            return ok
+            return {**base, "status_code": resp.status_code, "body": resp.text[:2000]}
         except Exception as exc:
             latency = (time.perf_counter() - t0) * 1000
             self._record(latency, False, err=str(exc))
             logger.warning("HTTP send_registration_event failed [%s]: %s", self.endpoint.url, exc)
-            return False
+            return {**base, "status_code": None, "body": str(exc)}
 
     async def send_batch(self, batch: BatchPayload) -> bool:
         # Use cert of first event in batch (all events in a batch come from one session)

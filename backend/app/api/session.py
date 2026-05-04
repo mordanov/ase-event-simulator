@@ -183,8 +183,8 @@ class Session:
             logger.warning("mTLS cert registration skipped: %s", exc)
 
     async def _send_registration_events(self):
-        """POST a RegistrationEvent with biometrics to every enabled HTTP endpoint."""
-        tasks = []
+        """POST a RegistrationEvent with biometrics to every enabled endpoint,
+        then append an enriched log entry with the request payload and responses."""
         for d in self._generator.devices:
             event = RegistrationEvent(
                 device_id=d["device_id"],
@@ -195,10 +195,31 @@ class Session:
                 gender=d.get("gender"),
                 birth_date=d.get("birth_date"),
             )
-            for transport in self._transports:
-                tasks.append(transport.send_registration_event(event))
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+            import json as _json
+            request_payload = _json.loads(event.model_dump_json(
+                exclude={"request_payload", "endpoint_responses"}
+            ))
+
+            responses = await asyncio.gather(
+                *[t.send_registration_event(event) for t in self._transports],
+                return_exceptions=True,
+            )
+            endpoint_responses = [
+                r if isinstance(r, dict) else {"name": "?", "url": "?", "status_code": None, "body": str(r)}
+                for r in responses
+            ]
+
+            self._reg_log.append(RegistrationEvent(
+                device_id=d["device_id"],
+                status="registered",
+                message="Biometric registration event sent to endpoints",
+                height_cm=d.get("height_cm"),
+                weight_kg=d.get("weight_kg"),
+                gender=d.get("gender"),
+                birth_date=d.get("birth_date"),
+                request_payload=request_payload,
+                endpoint_responses=endpoint_responses,
+            ))
 
     async def _run_immediate(self):
         """Per interval: one event per device fanned out to every transport.

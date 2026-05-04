@@ -64,12 +64,25 @@ export interface TelemetryEvent {
   firmware_version: string;
 }
 
+export interface RegistrationEndpointResponse {
+  name: string;
+  url: string;
+  status_code: number | null;
+  body: string;
+}
+
 export interface RegistrationEvent {
   event_type: string;
   device_id: string;
   status: 'pending' | 'rejected' | 'registered' | string;
   message: string;
   timestamp: string;
+  height_cm?: number;
+  weight_kg?: number;
+  gender?: string;
+  birth_date?: string;
+  request_payload?: Record<string, unknown>;
+  endpoint_responses?: RegistrationEndpointResponse[];
 }
 
 export interface SessionStatus {

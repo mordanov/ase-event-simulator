@@ -108,6 +108,9 @@ class RegistrationEvent(BaseModel):
     weight_kg: Optional[float] = None
     gender: Optional[str] = None
     birth_date: Optional[str] = None  # YYYY-MM-DD
+    # Request/response inspection — populated after the event is sent to endpoints.
+    request_payload: Optional[dict] = None
+    endpoint_responses: Optional[list[dict]] = None  # [{"name", "url", "status_code", "body"}]
 
 
 class TelemetryEvent(BaseModel):
