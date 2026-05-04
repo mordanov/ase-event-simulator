@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from collections import deque
 from datetime import datetime, timezone
@@ -17,11 +18,15 @@ from typing import Optional
 from sqlalchemy import func, select
 
 from app.generators.telemetry import GPS_BOUNDS, FIRMWARE_VERSIONS, TelemetryGenerator, _rf
+import httpx
+
 from app.models.telemetry import (
+    ActivityEvent,
     BatchPayload,
     DeviceType,
     EndpointMode,
     EndpointStatus,
+    RecommendationLog,
     RegistrationEvent,
     ScenarioType,
     SendMode,
@@ -37,6 +42,8 @@ logger = logging.getLogger(__name__)
 
 MAX_RECENT_EVENTS = 50
 MAX_REG_LOG = 200
+MAX_REC_LOG = 500
+MAX_ACTIVITY_LOG = 1000
 
 
 class Session:
@@ -61,6 +68,13 @@ class Session:
         self._reg_log: deque[RegistrationEvent] = deque(maxlen=MAX_REG_LOG)
         self._devices_registered = 0
         self._devices_pending = 0
+
+        # Recommendation log
+        self._rec_log: deque[RecommendationLog] = deque(maxlen=MAX_REC_LOG)
+        self._rec_client: Optional[httpx.AsyncClient] = None
+
+        # Unified activity log (all backend calls)
+        self._activity_log: deque[ActivityEvent] = deque(maxlen=MAX_ACTIVITY_LOG)
 
         # Build generator (DB-backed devices take priority over ephemeral profiles)
         self._generator = TelemetryGenerator(
@@ -129,6 +143,13 @@ class Session:
         def on_reg_event(device_id: str, status: str, message: str) -> None:
             self._reg_log.append(RegistrationEvent(
                 device_id=device_id, status=status, message=message,
+            ))
+            self._activity_log.append(ActivityEvent(
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                event_type="authorisation",
+                device_id=device_id,
+                status=status,
+                data={"message": message},
             ))
             if status == "registered":
                 self._devices_registered += 1
@@ -222,6 +243,159 @@ class Session:
                 request_payload=request_payload,
                 endpoint_responses=endpoint_responses,
             ))
+            first_ok = next((r for r in endpoint_responses if r.get("status_code") and r["status_code"] < 400), None)
+            reg_status = "registered" if first_ok else ("error" if endpoint_responses else "ok")
+            self._activity_log.append(ActivityEvent(
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                event_type="registration",
+                device_id=d["device_id"],
+                status=reg_status,
+                data={
+                    "model": d.get("model"),
+                    "firmware_version": d.get("firmware"),
+                    "os": d.get("os"),
+                    "height_cm": d.get("height_cm"),
+                    "weight_kg": d.get("weight_kg"),
+                    "gender": d.get("gender"),
+                    "request": request_payload,
+                    "responses": endpoint_responses,
+                },
+            ))
+
+    def _collect_credit_results(self) -> list[dict]:
+        """Gather last_credit_results from all HTTP transports, deduplicated by device_id."""
+        seen: set[str] = set()
+        results: list[dict] = []
+        for t in self._transports:
+            if isinstance(t, HTTPTransport):
+                for cr in t.last_credit_results:
+                    did = cr.get("device_id", "")
+                    if did and did not in seen:
+                        seen.add(did)
+                        results.append(cr)
+        return results
+
+    async def _maybe_recommend(self, credit_results: list[dict]) -> None:
+        """Call the recommendation API for any device whose balance meets the handicap."""
+        handicap = self.config.recommendation_handicap
+        if handicap <= 0 or not credit_results:
+            return
+
+        # Derive the recommendation base URL from the first HTTP transport
+        from urllib.parse import urlparse
+        rec_base: Optional[str] = None
+        for t in self._transports:
+            if isinstance(t, HTTPTransport):
+                p = urlparse(t.endpoint.url)
+                rec_base = f"{p.scheme}://{p.netloc}"
+                break
+        if not rec_base:
+            return
+
+        api_key = os.getenv("INGESTION_API_KEY", "")
+
+        if self._rec_client is None or self._rec_client.is_closed:
+            self._rec_client = httpx.AsyncClient(timeout=httpx.Timeout(10.0))
+
+        for cr in credit_results:
+            device_id = cr.get("device_id", "")
+            balance_before = cr.get("resulting_balance", 0)
+            tier = cr.get("reward_tier", "bronze")
+            if not device_id or balance_before < handicap:
+                continue
+
+            rec_url = f"{rec_base}/api/v1/devices/{device_id}/recommendations"
+            try:
+                resp = await self._rec_client.post(
+                    rec_url, content='{"min_confidence": 0.2}',
+                    headers={"Content-Type": "application/json", "X-API-Key": api_key},
+                )
+                if resp.status_code < 400:
+                    body = resp.json()
+                    balance_after = body.get("credits_remaining", balance_before)
+                    ts_rec = datetime.now(timezone.utc).isoformat()
+                    self._rec_log.append(RecommendationLog(
+                        timestamp=ts_rec,
+                        device_id=device_id,
+                        reward_tier=body.get("reward_tier", tier),
+                        balance_before=balance_before,
+                        balance_after=balance_after,
+                        credits_spent=balance_before - balance_after,
+                        request={"device_id": device_id, "min_confidence": 0.2},
+                        response={
+                            "recommendations": body.get("recommendations", []),
+                            "credits_remaining": balance_after,
+                            "reward_tier": body.get("reward_tier", tier),
+                            "providers_called": body.get("providers_called", 0),
+                            "providers_succeeded": body.get("providers_succeeded", 0),
+                            "duration_ms": body.get("duration_ms", 0),
+                            "trace_id": body.get("trace_id", ""),
+                        },
+                    ))
+                    self._activity_log.append(ActivityEvent(
+                        timestamp=ts_rec,
+                        event_type="recommendation",
+                        device_id=device_id,
+                        status="ok",
+                        data={
+                            "request": {"device_id": device_id, "min_confidence": 0.2},
+                            "response": {
+                                "recommendations": body.get("recommendations", []),
+                                "credits_remaining": balance_after,
+                                "reward_tier": body.get("reward_tier", tier),
+                                "providers_called": body.get("providers_called", 0),
+                                "providers_succeeded": body.get("providers_succeeded", 0),
+                                "duration_ms": body.get("duration_ms", 0),
+                            },
+                            "balance_before": balance_before,
+                            "balance_after": balance_after,
+                            "credits_spent": balance_before - balance_after,
+                        },
+                    ))
+                else:
+                    ts_rec = datetime.now(timezone.utc).isoformat()
+                    self._rec_log.append(RecommendationLog(
+                        timestamp=ts_rec,
+                        device_id=device_id,
+                        reward_tier=tier,
+                        balance_before=balance_before,
+                        balance_after=balance_before,
+                        credits_spent=0,
+                        request={"device_id": device_id, "min_confidence": 0.2},
+                        error=f"HTTP {resp.status_code}: {resp.text[:200]}",
+                    ))
+                    self._activity_log.append(ActivityEvent(
+                        timestamp=ts_rec,
+                        event_type="recommendation",
+                        device_id=device_id,
+                        status="error",
+                        data={
+                            "request": {"device_id": device_id, "min_confidence": 0.2},
+                            "error": f"HTTP {resp.status_code}: {resp.text[:200]}",
+                        },
+                    ))
+            except Exception as exc:
+                ts_rec = datetime.now(timezone.utc).isoformat()
+                self._rec_log.append(RecommendationLog(
+                    timestamp=ts_rec,
+                    device_id=device_id,
+                    reward_tier=tier,
+                    balance_before=balance_before,
+                    balance_after=balance_before,
+                    credits_spent=0,
+                    request={"device_id": device_id, "min_confidence": 0.2},
+                    error=str(exc),
+                ))
+                self._activity_log.append(ActivityEvent(
+                    timestamp=ts_rec,
+                    event_type="recommendation",
+                    device_id=device_id,
+                    status="error",
+                    data={
+                        "request": {"device_id": device_id, "min_confidence": 0.2},
+                        "error": str(exc)[:200],
+                    },
+                ))
 
     async def _run_immediate(self):
         """Per interval: one event per device fanned out to every transport.
@@ -237,6 +411,11 @@ class Session:
         while self._running:
             if self.config.total_events and sent >= self.config.total_events:
                 break
+
+            # Clear accumulated credit results from the previous cycle
+            for t in self._transports:
+                if isinstance(t, HTTPTransport):
+                    t.last_credit_results.clear()
 
             # Generate ONE event per device (protocol = primary transport)
             base_events: list[TelemetryEvent] = [
@@ -282,6 +461,33 @@ class Session:
                     self._events_sent += 1
                     sent += 1
 
+            credit_results = self._collect_credit_results()
+            ts_ev = datetime.now(timezone.utc).isoformat()
+            endpoint_statuses = [
+                {"name": t.status.name, "status_code": t.status.last_status_code}
+                for t in self._transports if isinstance(t, HTTPTransport)
+            ]
+            for event in base_events:
+                self._activity_log.append(ActivityEvent(
+                    timestamp=ts_ev,
+                    event_type=event.scenario.value,
+                    device_id=event.device_id,
+                    status="anomaly" if event.is_anomaly else "ok",
+                    data={
+                        "payload": event.model_dump(mode="json"),
+                        "endpoint_statuses": endpoint_statuses,
+                    },
+                ))
+            for cr in credit_results:
+                if cr.get("activity_reward", 0) > 0:
+                    self._activity_log.append(ActivityEvent(
+                        timestamp=ts_ev,
+                        event_type="rewards",
+                        device_id=cr.get("device_id", ""),
+                        status="ok",
+                        data=cr,
+                    ))
+            await self._maybe_recommend(credit_results)
             await asyncio.sleep(self.config.interval_seconds)
 
     async def _run_batch(self):
@@ -299,6 +505,11 @@ class Session:
                 if self.config.total_events
                 else device_count
             )
+
+            # Clear accumulated credit results from the previous cycle
+            for t in self._transports:
+                if isinstance(t, HTTPTransport):
+                    t.last_credit_results.clear()
 
             # Generate ONE set of events (same event_id/metrics across all transports)
             base_events: list[TelemetryEvent] = [
@@ -364,6 +575,33 @@ class Session:
                     total_sent += len(batch.events)
                     self._batches_sent += 1
 
+            credit_results = self._collect_credit_results()
+            ts_ev = datetime.now(timezone.utc).isoformat()
+            endpoint_statuses = [
+                {"name": t.status.name, "status_code": t.status.last_status_code}
+                for t in self._transports if isinstance(t, HTTPTransport)
+            ]
+            for event in base_events:
+                self._activity_log.append(ActivityEvent(
+                    timestamp=ts_ev,
+                    event_type=event.scenario.value,
+                    device_id=event.device_id,
+                    status="anomaly" if event.is_anomaly else "ok",
+                    data={
+                        "payload": event.model_dump(mode="json"),
+                        "endpoint_statuses": endpoint_statuses,
+                    },
+                ))
+            for cr in credit_results:
+                if cr.get("activity_reward", 0) > 0:
+                    self._activity_log.append(ActivityEvent(
+                        timestamp=ts_ev,
+                        event_type="rewards",
+                        device_id=cr.get("device_id", ""),
+                        status="ok",
+                        data=cr,
+                    ))
+            await self._maybe_recommend(credit_results)
             await asyncio.sleep(self.config.interval_seconds)
 
     # ── status ─────────────────────────────────────────────────────────────
@@ -392,6 +630,8 @@ class Session:
             devices_registered=self._devices_registered,
             devices_pending=self._devices_pending,
             registration_log=list(self._reg_log),
+            recommendation_log=list(self._rec_log),
+            activity_log=list(self._activity_log),
         )
 
     # ── cleanup ────────────────────────────────────────────────────────────
@@ -403,6 +643,9 @@ class Session:
                     await t.close()
                 except Exception:
                     pass
+        if self._rec_client and not self._rec_client.is_closed:
+            await self._rec_client.aclose()
+            self._rec_client = None
 
 
 # ─── DB device loader ─────────────────────────────────────────────────────────

@@ -29,6 +29,7 @@ export interface SessionConfig {
   total_events: number | null;
   endpoints: EndpointConfig[];
   protocols: TransportProtocol[];
+  recommendation_handicap: number;
 }
 
 export interface EndpointError {
@@ -97,6 +98,26 @@ export interface RegistrationEvent {
   endpoint_responses?: RegistrationEndpointResponse[];
 }
 
+export interface RecommendationLog {
+  timestamp: string;
+  device_id: string;
+  reward_tier: string;
+  balance_before: number;
+  balance_after: number;
+  credits_spent: number;
+  request: Record<string, unknown>;
+  response?: Record<string, unknown>;
+  error?: string;
+}
+
+export interface ActivityEvent {
+  timestamp: string;
+  event_type: string;
+  device_id: string;
+  status: string;
+  data: Record<string, unknown>;
+}
+
 export interface SessionStatus {
   session_id: string;
   running: boolean;
@@ -115,6 +136,8 @@ export interface SessionStatus {
   devices_registered: number;
   devices_pending: number;
   registration_log: RegistrationEvent[];
+  recommendation_log: RecommendationLog[];
+  activity_log: ActivityEvent[];
 }
 
 export interface SimulatorDefaults {

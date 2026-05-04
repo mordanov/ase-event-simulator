@@ -1,175 +1,287 @@
-import React, { useRef, useEffect, useState } from 'react';
-import type { TelemetryEvent } from '../types';
+import React, { useState } from 'react';
+import type { ActivityEvent } from '../types';
 
-interface Props {
-  events: TelemetryEvent[];
+// ── Detail panel helpers ──────────────────────────────────────────────────────
+
+function JsonBlock({ value }: { value: unknown }) {
+  return (
+    <pre style={styles.json}>{JSON.stringify(value, null, 2)}</pre>
+  );
 }
 
-const DEVICE_ICONS: Record<string, string> = {
-  smartwatch: '⌚',
-  fitness_tracker: '📿',
-  smartphone: '📱',
-  laptop: '💻',
-};
-
-const PROTOCOL_COLORS: Record<string, string> = {
-  http: '#4ade80',
-  mqtt: '#60a5fa',
-  websocket: '#f59e0b',
-  grpc: '#c084fc',
-};
-
-const SCENARIO_COLORS: Record<string, string> = {
-  workout: '#fb923c',
-  sleep: '#818cf8',
-  rest: '#34d399',
-  emergency: '#f87171',
-  random: '#a78bfa',
-};
-
-export function EventLog({ events }: Props) {
-  const [autoScroll, setAutoScroll] = useState(true);
-  const [selectedEvent, setSelectedEvent] = useState<TelemetryEvent | null>(null);
-  const bottomRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (autoScroll && bottomRef.current) {
-      bottomRef.current.scrollIntoView({ behavior: 'smooth' });
-    }
-  }, [events, autoScroll]);
-
+function Section({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div style={styles.panel}>
-      <div style={styles.header}>
-        <span style={styles.title}>Event Log</span>
-        <div style={styles.headerRight}>
-          <span style={styles.count}>{events.length} events</span>
-          <label style={styles.toggleLabel}>
-            <input
-              type="checkbox"
-              checked={autoScroll}
-              onChange={e => setAutoScroll(e.target.checked)}
-              style={{ accentColor: '#4ade80' }}
-            />
-            <span style={{ marginLeft: 4 }}>Auto-scroll</span>
-          </label>
-        </div>
-      </div>
-
-      <div style={styles.tableWrap}>
-        <table style={styles.table}>
-          <thead>
-            <tr>
-              {['Time', 'Device', 'Type', 'Protocol', 'Scenario', 'HR', 'SpO₂', 'Steps', 'Temp', 'Status'].map(h => (
-                <th key={h} style={styles.th}>{h}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {events.map(ev => (
-              <tr
-                key={ev.event_id}
-                style={{
-                  ...styles.tr,
-                  background: ev.is_anomaly ? '#2d150a' : 'transparent',
-                  cursor: 'pointer',
-                }}
-                onClick={() => setSelectedEvent(ev === selectedEvent ? null : ev)}
-              >
-                <td style={styles.td}>
-                  <span style={styles.mono}>{formatTime(ev.timestamp)}</span>
-                </td>
-                <td style={styles.td}>
-                  <span title={ev.device_id} style={styles.mono}>
-                    {DEVICE_ICONS[ev.device_type]} {ev.device_id.slice(-8)}
-                  </span>
-                </td>
-                <td style={styles.td}>
-                  <span style={styles.badge}>{ev.device_type.replace('_', ' ')}</span>
-                </td>
-                <td style={styles.td}>
-                  <span style={{ ...styles.badge, color: PROTOCOL_COLORS[ev.protocol] }}>
-                    {ev.protocol.toUpperCase()}
-                  </span>
-                </td>
-                <td style={styles.td}>
-                  <span style={{ color: SCENARIO_COLORS[ev.scenario], fontSize: 11 }}>
-                    {ev.scenario}
-                  </span>
-                </td>
-                <td style={styles.td}>
-                  {ev.heart_rate ? (
-                    <span style={{ color: ev.heart_rate.bpm > 180 || ev.heart_rate.bpm < 40 ? '#f87171' : '#e2e8f0' }}>
-                      {ev.heart_rate.bpm} bpm
-                    </span>
-                  ) : <span style={styles.na}>—</span>}
-                </td>
-                <td style={styles.td}>
-                  {ev.spo2 ? (
-                    <span style={{ color: ev.spo2.percentage < 90 ? '#f87171' : '#e2e8f0' }}>
-                      {ev.spo2.percentage}%
-                    </span>
-                  ) : <span style={styles.na}>—</span>}
-                </td>
-                <td style={styles.td}>
-                  {ev.steps
-                    ? <span>{ev.steps.count.toLocaleString()}</span>
-                    : <span style={styles.na}>—</span>}
-                </td>
-                <td style={styles.td}>
-                  {ev.temperature ? (
-                    <span style={{ color: ev.temperature.celsius > 38 ? '#f87171' : '#e2e8f0' }}>
-                      {ev.temperature.celsius}°C
-                    </span>
-                  ) : <span style={styles.na}>—</span>}
-                </td>
-                <td style={styles.td}>
-                  {ev.is_anomaly
-                    ? <span style={styles.anomalyBadge}>⚠ ANOMALY</span>
-                    : <span style={styles.okBadge}>OK</span>}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        <div ref={bottomRef} />
-      </div>
-
-      {/* Detail drawer */}
-      {selectedEvent && (
-        <div style={styles.drawer}>
-          <div style={styles.drawerHeader}>
-            <span style={styles.drawerTitle}>
-              {DEVICE_ICONS[selectedEvent.device_type]} {selectedEvent.device_id}
-            </span>
-            <button style={styles.closeBtn} onClick={() => setSelectedEvent(null)}>✕</button>
-          </div>
-          <pre style={styles.json}>
-            {JSON.stringify(selectedEvent, null, 2)}
-          </pre>
-        </div>
-      )}
+    <div style={styles.section}>
+      <div style={styles.sectionLabel}>{label}</div>
+      {children}
     </div>
   );
 }
 
-function formatTime(ts: string) {
-  try {
-    return new Date(ts).toLocaleTimeString([], { hour12: false });
-  } catch {
-    return ts.slice(11, 19);
+function EventDetail({ ev }: { ev: ActivityEvent }) {
+  const d = ev.data;
+
+  switch (ev.event_type) {
+    case 'workout':
+    case 'sleep':
+    case 'rest':
+    case 'emergency':
+    case 'random': {
+      const payload = d.payload as Record<string, unknown> | undefined;
+      const statuses = d.endpoint_statuses as unknown[] | undefined;
+      return (
+        <>
+          {payload
+            ? <Section label="Request Payload"><JsonBlock value={payload} /></Section>
+            : <NoData label="request payload" />}
+          {statuses && statuses.length > 0
+            ? <Section label="Endpoint Responses"><JsonBlock value={statuses} /></Section>
+            : <NoData label="endpoint responses" />}
+        </>
+      );
+    }
+
+    case 'registration': {
+      const req = d.request;
+      const resp = d.responses;
+      return (
+        <>
+          {req
+            ? <Section label="Request"><JsonBlock value={req} /></Section>
+            : <NoData label="request" />}
+          {Array.isArray(resp) && resp.length > 0
+            ? <Section label="Endpoint Responses"><JsonBlock value={resp} /></Section>
+            : <NoData label="endpoint responses" />}
+        </>
+      );
+    }
+
+    case 'recommendation': {
+      const req = d.request;
+      const resp = d.response;
+      const err = d.error;
+      return (
+        <>
+          {req
+            ? <Section label="Request"><JsonBlock value={req} /></Section>
+            : <NoData label="request" />}
+          {resp
+            ? <Section label="Response"><JsonBlock value={resp} /></Section>
+            : err
+            ? <Section label="Error"><pre style={{ ...styles.json, color: '#f87171' }}>{String(err)}</pre></Section>
+            : <NoData label="response" />}
+          {'balance_before' in d && (
+            <Section label="Credits">
+              <JsonBlock value={{
+                balance_before: d.balance_before,
+                balance_after: d.balance_after,
+                credits_spent: d.credits_spent,
+              }} />
+            </Section>
+          )}
+        </>
+      );
+    }
+
+    case 'rewards': {
+      return (
+        <>
+          <div style={styles.noData}>Internal credit operation — no HTTP request/response</div>
+          <Section label="Credit Details"><JsonBlock value={d} /></Section>
+        </>
+      );
+    }
+
+    case 'authorisation': {
+      return (
+        <>
+          <div style={styles.noData}>Certificate operation — no HTTP request/response</div>
+          <Section label="Details"><JsonBlock value={d} /></Section>
+        </>
+      );
+    }
+
+    default:
+      return <Section label="Data"><JsonBlock value={d} /></Section>;
   }
+}
+
+function NoData({ label }: { label: string }) {
+  return <div style={styles.noData}>No {label} available</div>;
+}
+
+interface Props {
+  events: ActivityEvent[];
+}
+
+const TYPE_COLORS: Record<string, string> = {
+  workout:        '#fb923c',
+  sleep:          '#818cf8',
+  rest:           '#34d399',
+  emergency:      '#f87171',
+  random:         '#a78bfa',
+  registration:   '#38bdf8',
+  authorisation:  '#fbbf24',
+  rewards:        '#4ade80',
+  recommendation: '#c084fc',
+};
+
+const STATUS_COLORS: Record<string, string> = {
+  ok:         '#4ade80',
+  anomaly:    '#f97316',
+  error:      '#f87171',
+  registered: '#38bdf8',
+  rejected:   '#f87171',
+  pending:    '#fbbf24',
+};
+
+function getSummary(ev: ActivityEvent): string {
+  const d = ev.data;
+  switch (ev.event_type) {
+    case 'workout':
+    case 'sleep':
+    case 'rest':
+    case 'emergency':
+    case 'random': {
+      const proto = ((d.payload as Record<string, unknown> | undefined)?.protocol as string | undefined) ?? '';
+      return proto ? proto.toUpperCase() : '';
+    }
+    case 'registration':
+      return [d.model, d.firmware_version].filter(Boolean).join(' · ') as string;
+    case 'authorisation':
+      return (d.message as string | undefined) ?? '';
+    case 'rewards': {
+      const reward = d.activity_reward as number | undefined;
+      const tier = d.reward_tier as string | undefined;
+      return reward != null ? `+${reward} credits${tier ? ` · ${tier}` : ''}` : '';
+    }
+    case 'recommendation': {
+      if (d.error) return `Error: ${String(d.error).slice(0, 50)}`;
+      const resp = d.response as Record<string, unknown> | undefined;
+      const recs = resp?.recommendations as unknown[] | undefined;
+      const count = recs?.length;
+      const spent = d.credits_spent as number | undefined;
+      return [
+        count != null ? `${count} rec${count !== 1 ? 's' : ''}` : null,
+        spent != null && spent > 0 ? `−${spent} credits` : null,
+      ].filter(Boolean).join(' · ');
+    }
+    default:
+      return '';
+  }
+}
+
+export function EventLog({ events }: Props) {
+  const [filter, setFilter] = useState<string>('all');
+  const [expanded, setExpanded] = useState<string | null>(null);
+
+  const reversed = [...events].reverse();
+  const allTypes = Array.from(new Set(events.map(e => e.event_type)));
+  const visible = filter === 'all' ? reversed : reversed.filter(e => e.event_type === filter);
+
+  return (
+    <div style={styles.panel}>
+      <div style={styles.header}>
+        <span style={styles.title}>Activity Log</span>
+        <span style={styles.count}>{visible.length}{filter !== 'all' ? ` / ${events.length}` : ''} events</span>
+      </div>
+
+      {/* Filter chips */}
+      <div style={styles.filters}>
+        <Chip label="ALL" active={filter === 'all'} color="#94a3b8" onClick={() => { setFilter('all'); setExpanded(null); }} />
+        {allTypes.map(t => (
+          <Chip
+            key={t}
+            label={t.toUpperCase()}
+            active={filter === t}
+            color={TYPE_COLORS[t] ?? '#64748b'}
+            onClick={() => { setFilter(t); setExpanded(null); }}
+          />
+        ))}
+      </div>
+
+      {/* List */}
+      <div style={styles.list}>
+        {visible.length === 0 ? (
+          <div style={styles.empty}>No {filter === 'all' ? '' : filter + ' '}events yet.</div>
+        ) : (
+          visible.map((ev, i) => {
+            const key = `${ev.timestamp}:${ev.device_id}:${ev.event_type}`;
+            const isOpen = expanded === key;
+            const typeColor = TYPE_COLORS[ev.event_type] ?? '#64748b';
+            const statusColor = STATUS_COLORS[ev.status] ?? '#64748b';
+            const time = new Date(ev.timestamp).toLocaleTimeString([], {
+              hour: '2-digit', minute: '2-digit', second: '2-digit',
+            });
+            const summary = getSummary(ev);
+
+            return (
+              <React.Fragment key={i}>
+                <div
+                  style={{
+                    ...styles.row,
+                    background: isOpen ? '#0f1a27' : 'transparent',
+                    cursor: 'pointer',
+                  }}
+                  onClick={() => setExpanded(isOpen ? null : key)}
+                >
+                  <span style={{ ...styles.typeBadge, color: typeColor, borderColor: typeColor }}>
+                    {ev.event_type}
+                  </span>
+                  <span style={styles.deviceId}>{ev.device_id.slice(-12)}</span>
+                  <span style={styles.summary}>{summary}</span>
+                  <span style={{ ...styles.statusBadge, color: statusColor }}>
+                    {ev.status}
+                  </span>
+                  <span style={styles.time}>{time}</span>
+                  <span style={styles.arrow}>{isOpen ? '▲' : '▼'}</span>
+                </div>
+                {isOpen && (
+                  <div style={styles.detail}>
+                    <EventDetail ev={ev} />
+                  </div>
+                )}
+              </React.Fragment>
+            );
+          })
+        )}
+      </div>
+    </div>
+  );
+}
+
+function Chip({ label, active, color, onClick }: { label: string; active: boolean; color: string; onClick: () => void }) {
+  return (
+    <button
+      style={{
+        background: active ? `${color}22` : 'transparent',
+        border: `1px solid ${active ? color : '#2a3040'}`,
+        borderRadius: 4,
+        color: active ? color : '#475569',
+        cursor: 'pointer',
+        fontFamily: 'inherit',
+        fontSize: 9,
+        fontWeight: 700,
+        letterSpacing: '0.06em',
+        padding: '2px 7px',
+        whiteSpace: 'nowrap',
+      }}
+      onClick={onClick}
+    >
+      {label}
+    </button>
+  );
 }
 
 const styles: Record<string, React.CSSProperties> = {
   panel: {
-    background: '#0f1117',
-    border: '1px solid #1e2130',
-    borderRadius: 12,
-    padding: 20,
+    background: '#0d1117',
+    border: '1px solid #1e2a38',
+    borderRadius: 10,
+    padding: '14px 16px',
     display: 'flex',
     flexDirection: 'column',
-    gap: 12,
+    gap: 10,
   },
   header: {
     display: 'flex',
@@ -183,120 +295,116 @@ const styles: Record<string, React.CSSProperties> = {
     letterSpacing: '0.1em',
     fontWeight: 600,
   },
-  headerRight: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 16,
-  },
   count: {
-    fontSize: 11,
-    color: '#4ade80',
-    fontWeight: 600,
-  },
-  toggleLabel: {
-    display: 'flex',
-    alignItems: 'center',
-    fontSize: 11,
-    color: '#475569',
-    cursor: 'pointer',
-  },
-  tableWrap: {
-    overflowY: 'auto',
-    maxHeight: 380,
-    borderRadius: 8,
-    border: '1px solid #1e2130',
-  },
-  table: {
-    width: '100%',
-    borderCollapse: 'collapse',
-    fontSize: 12,
-  },
-  th: {
-    padding: '8px 12px',
-    textAlign: 'left',
-    color: '#475569',
     fontSize: 10,
-    textTransform: 'uppercase',
-    letterSpacing: '0.08em',
-    background: '#0a0d14',
-    borderBottom: '1px solid #1e2130',
-    position: 'sticky',
-    top: 0,
-    fontWeight: 600,
+    color: '#334155',
   },
-  tr: {
-    borderBottom: '1px solid #1a1f2e',
-    transition: 'background 0.1s',
+  filters: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    gap: 6,
   },
-  td: {
-    padding: '7px 12px',
-    color: '#cbd5e1',
-    verticalAlign: 'middle',
+  list: {
+    display: 'flex',
+    flexDirection: 'column',
+    maxHeight: 420,
+    overflowY: 'auto',
+  },
+  row: {
+    display: 'grid',
+    gridTemplateColumns: '100px 90px 1fr auto 52px 14px',
+    alignItems: 'center',
+    gap: 8,
+    padding: '5px 4px',
+    borderBottom: '1px solid #0f1520',
+    borderRadius: 4,
+    fontSize: 11,
+  },
+  typeBadge: {
+    fontSize: 9,
+    fontWeight: 700,
+    border: '1px solid',
+    borderRadius: 4,
+    padding: '1px 4px',
+    textAlign: 'center',
+    letterSpacing: '0.04em',
+    whiteSpace: 'nowrap',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+  },
+  deviceId: {
+    color: '#94a3b8',
+    fontSize: 10,
+    fontFamily: 'inherit',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
   },
-  mono: {
-    fontFamily: 'monospace',
-    fontSize: 11,
-    color: '#94a3b8',
-  },
-  badge: {
-    fontSize: 10,
+  summary: {
     color: '#64748b',
-    background: '#1a1f2e',
-    borderRadius: 4,
-    padding: '1px 5px',
-  },
-  na: { color: '#2a3040' },
-  anomalyBadge: {
     fontSize: 10,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
+  statusBadge: {
+    fontSize: 9,
     fontWeight: 700,
-    color: '#f97316',
-    background: '#431407',
-    borderRadius: 4,
-    padding: '2px 6px',
-    border: '1px solid #7c2d12',
+    whiteSpace: 'nowrap',
   },
-  okBadge: {
-    fontSize: 10,
-    color: '#475569',
-    background: '#1a1f2e',
-    borderRadius: 4,
-    padding: '2px 6px',
+  time: {
+    fontSize: 9,
+    color: '#334155',
+    whiteSpace: 'nowrap',
+    textAlign: 'right',
   },
-  drawer: {
-    background: '#0a0d14',
-    border: '1px solid #2a3040',
-    borderRadius: 8,
+  arrow: {
+    fontSize: 9,
+    color: '#334155',
+    textAlign: 'right',
+  },
+  detail: {
+    background: '#080d12',
+    border: '1px solid #1e2a38',
+    borderRadius: 6,
+    margin: '2px 0 6px 0',
     overflow: 'hidden',
   },
-  drawerHeader: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: '8px 14px',
-    borderBottom: '1px solid #1e2130',
-  },
-  drawerTitle: {
-    fontSize: 12,
-    color: '#94a3b8',
-    fontFamily: 'monospace',
-  },
-  closeBtn: {
-    background: 'transparent',
-    border: 'none',
-    color: '#475569',
-    cursor: 'pointer',
-    fontSize: 13,
-  },
   json: {
-    margin: 0,
-    padding: '12px 14px',
-    fontSize: 11,
     color: '#94a3b8',
-    fontFamily: 'monospace',
-    overflowX: 'auto',
-    maxHeight: 260,
-    overflowY: 'auto',
+    fontFamily: 'inherit',
+    fontSize: 10,
     lineHeight: 1.6,
+    margin: 0,
+    maxHeight: 200,
+    overflow: 'auto',
+    padding: '10px 14px',
+    whiteSpace: 'pre-wrap',
+    wordBreak: 'break-word',
+  },
+  section: {
+    borderBottom: '1px solid #0f1a27',
+    paddingBottom: 6,
+    marginBottom: 4,
+  },
+  sectionLabel: {
+    color: '#475569',
+    fontSize: 9,
+    fontWeight: 700,
+    letterSpacing: '0.08em',
+    padding: '6px 14px 2px',
+    textTransform: 'uppercase',
+  },
+  noData: {
+    color: '#334155',
+    fontSize: 10,
+    fontStyle: 'italic',
+    padding: '6px 14px',
+  },
+  empty: {
+    color: '#334155',
+    fontSize: 11,
+    padding: '12px 4px',
+    textAlign: 'center',
   },
 };

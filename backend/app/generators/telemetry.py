@@ -202,17 +202,20 @@ class TelemetryGenerator:
             else random.choice(self._devices)
         )
         is_anomaly = force_anomaly or (random.random() < self.anomaly_rate)
-        effective_scenario = ScenarioType.EMERGENCY if is_anomaly else scenario
+        # Use emergency ranges for anomalous events, but keep the configured scenario label.
+        # is_anomaly already signals the anomaly; overriding scenario creates mixed event types
+        # in a single session (e.g. a "random" session emitting "emergency" events).
+        data_scenario = ScenarioType.EMERGENCY if is_anomaly else scenario
 
         caps = DEVICE_CAPABILITIES[device["device_type"]]
-        ranges = SCENARIO_RANGES[effective_scenario]
+        ranges = SCENARIO_RANGES[data_scenario]
 
         return TelemetryEvent(
             device_id=device["device_id"],
             device_type=device["device_type"],
             user_id=device["user_id"],
             timestamp=datetime.now(timezone.utc).isoformat(),
-            scenario=effective_scenario,
+            scenario=scenario,
             is_anomaly=is_anomaly,
             protocol=protocol,
             firmware_version=device["firmware"],
@@ -220,7 +223,7 @@ class TelemetryGenerator:
             heart_rate=self._heart_rate(ranges, caps),
             steps=self._steps(ranges, caps),
             spo2=self._spo2(ranges, caps),
-            sleep=self._sleep(ranges, caps, effective_scenario),
+            sleep=self._sleep(ranges, caps, data_scenario),
             blood_pressure=self._bp(ranges, caps),
             temperature=self._temperature(ranges, caps),
             gps=self._gps(caps, device),

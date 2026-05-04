@@ -51,6 +51,7 @@ export function useSimulator() {
       try {
         const s = await api.getStatus(id);
         setStatus(s);
+        setLoading(false);  // first successful poll clears the "starting" spinner
         if (!s.running) stopPolling();
       } catch {
         // backend may have restarted; keep polling
@@ -75,9 +76,9 @@ export function useSimulator() {
       const res = await api.startSession(config);
       setSessionId(res.session_id);
       startPolling(res.session_id);
+      // loading stays true until the first poll clears it
     } catch (e: any) {
       setError(e.message ?? 'Failed to start session');
-    } finally {
       setLoading(false);
     }
   }, [startPolling]);

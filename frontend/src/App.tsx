@@ -5,6 +5,7 @@ import { EndpointStatusPanel } from './components/EndpointStatusPanel';
 import { EventLog } from './components/EventLog';
 import { DeviceRegistry } from './components/DeviceRegistry';
 import { RegistrationLog } from './components/RegistrationLog';
+import { RecommendationLog } from './components/RecommendationLog';
 import { useSimulator } from './hooks/useSimulator';
 
 export default function App() {
@@ -85,7 +86,8 @@ export default function App() {
           <DeviceRegistry />
           <RegistrationLog status={status ?? null} />
           <EndpointStatusPanel endpoints={status?.endpoints ?? []} />
-          <EventLog events={status?.recent_events ?? []} />
+          <RecommendationLog status={status ?? null} />
+          <EventLog events={status?.activity_log ?? []} />
         </div>
       </div>
 

@@ -59,10 +59,16 @@ DEVICE_OS = {
 GPS_CAPABLE = {"smartwatch", "smartphone"}
 GPS_BOUNDS = {"lat": (40.0, 55.0), "lon": (-10.0, 40.0)}
 
-GENDERS = ["male", "female"]
-HEIGHT_RANGE = {"male": (165.0, 195.0), "female": (155.0, 180.0)}
-WEIGHT_RANGE = {"male": (65.0, 100.0), "female": (50.0,  85.0)}
-BIRTH_YEAR_RANGE = (1955, 2005)
+# Gender distribution: female 62%, male 33%, not_defined 5%
+GENDER_CHOICES  = ["female", "male", "not_defined"]
+GENDER_WEIGHTS  = [0.62,     0.33,   0.05]
+
+AGE_RANGE    = {"male": (20, 75), "female": (18, 70), "not_defined": (18, 75)}
+HEIGHT_RANGE = {"male": (163.0, 195.0), "female": (150.0, 178.0), "not_defined": (150.0, 195.0)}
+WEIGHT_RANGE = {"male": (45.0, 130.0),  "female": (35.0, 110.0),  "not_defined": (35.0, 130.0)}
+
+import datetime as _dt
+_CURRENT_YEAR = _dt.date.today().year
 
 
 def _rf(lo: float, hi: float, decimals: int = 5) -> float:
@@ -76,8 +82,9 @@ def _make_user_pool(size: int) -> list[str]:
 def _make_device(device_type: str, user_id: str) -> dict:
     short = uuid.uuid4().hex[:8]
     has_gps = device_type in GPS_CAPABLE
-    gender = random.choice(GENDERS)
-    birth_year = random.randint(*BIRTH_YEAR_RANGE)
+    gender = random.choices(GENDER_CHOICES, weights=GENDER_WEIGHTS, k=1)[0]
+    age = random.randint(*AGE_RANGE[gender])
+    birth_year = _CURRENT_YEAR - age
     birth_month = random.randint(1, 12)
     birth_day = random.randint(1, 28)
     return {

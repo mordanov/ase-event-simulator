@@ -15,6 +15,7 @@ const DEFAULT_CONFIG: SessionConfig = {
   total_events: null,
   endpoints: [],
   protocols: ['http'],
+  recommendation_handicap: 500,
 };
 
 interface Props {
@@ -200,6 +201,24 @@ export function ConfigPanel({
             value={cfg.anomaly_rate}
             onChange={e => updateCfg({ anomaly_rate: +e.target.value })}
           />
+        </div>
+        <div style={{ marginTop: 8 }}>
+          <label style={styles.miniLabel}>
+            Recommendation handicap (credits)
+          </label>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
+            <input
+              type="number" min={0} step={1}
+              style={{ ...styles.input, width: 100 }}
+              value={cfg.recommendation_handicap}
+              onChange={e => updateCfg({ recommendation_handicap: Math.max(0, +e.target.value) })}
+            />
+            <span style={{ fontSize: 10, color: '#475569' }}>
+              {cfg.recommendation_handicap === 0
+                ? 'disabled'
+                : `call recommendations when balance ≥ ${cfg.recommendation_handicap}`}
+            </span>
+          </div>
         </div>
       </Section>
 

@@ -182,6 +182,7 @@ class SessionConfig(BaseModel):
     total_events: Optional[int] = None  # None = run until stopped
     endpoints: list[EndpointConfig]
     protocols: list[TransportProtocol]
+    recommendation_handicap: int = 500  # call recommendations when balance >= this (0 = disabled)
 
 
 # ─── Runtime status ───────────────────────────────────────────────────────────
@@ -204,6 +205,27 @@ class EndpointStatus(BaseModel):
     recent_errors: list[EndpointError] = Field(default_factory=list)
 
 
+class ActivityEvent(BaseModel):
+    """Unified log entry for every backend call made during a session."""
+    timestamp: str
+    event_type: str   # workout|sleep|rest|emergency|random|registration|authorisation|rewards|recommendation
+    device_id: str
+    status: str       # ok|error|anomaly|registered|rejected|pending
+    data: dict = Field(default_factory=dict)
+
+
+class RecommendationLog(BaseModel):
+    timestamp: str
+    device_id: str
+    reward_tier: str
+    balance_before: int
+    balance_after: int
+    credits_spent: int
+    request: dict
+    response: Optional[dict] = None
+    error: Optional[str] = None
+
+
 class SessionStatus(BaseModel):
     session_id: str
     running: bool
@@ -222,6 +244,8 @@ class SessionStatus(BaseModel):
     devices_registered: int = 0
     devices_pending: int = 0
     registration_log: list[RegistrationEvent] = Field(default_factory=list)
+    recommendation_log: list[RecommendationLog] = Field(default_factory=list)
+    activity_log: list[ActivityEvent] = Field(default_factory=list)
 
 
 # ─── API request/response shapes ─────────────────────────────────────────────

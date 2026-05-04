@@ -114,6 +114,7 @@ class HTTPTransport(BaseTransport):
         self._mtls_clients: dict[str, httpx.AsyncClient] = {}
         self._cert_files: dict[str, tuple[str, str]] = {}   # fingerprint → (cert_path, key_path)
         self._tmpdir: Optional[str] = None
+        self.last_credit_results: list[dict] = []  # populated after each send_event/send_batch
 
     def register_device_cert(self, fingerprint: str, cert_pem: str, key_pem: str) -> None:
         """Store device cert on disk so httpx can use it for mTLS."""
@@ -156,6 +157,11 @@ class HTTPTransport(BaseTransport):
             ok = resp.status_code < 400
             err = "" if ok else f"HTTP {resp.status_code}: {resp.text[:300]}"
             self._record(latency, ok, code=resp.status_code, err=err)
+            if ok:
+                try:
+                    self.last_credit_results.extend(resp.json().get("credit_results", []))
+                except Exception:
+                    pass
             return ok
         except Exception as exc:
             latency = (time.perf_counter() - t0) * 1000
@@ -202,6 +208,11 @@ class HTTPTransport(BaseTransport):
             latency = (time.perf_counter() - t0) * 1000
             ok = resp.status_code < 400
             self._record(latency, ok, code=resp.status_code)
+            if ok:
+                try:
+                    self.last_credit_results.extend(resp.json().get("credit_results", []))
+                except Exception:
+                    pass
             return ok
         except Exception as exc:
             latency = (time.perf_counter() - t0) * 1000
