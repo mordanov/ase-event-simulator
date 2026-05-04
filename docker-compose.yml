@@ -1,23 +1,6 @@
 version: "3.9"
 
 services:
-  # ── PostgreSQL device registry ───────────────────────────────────────────────
-  db:
-    image: postgres:16-alpine
-    container_name: simulator-db
-    environment:
-      POSTGRES_USER: simulator
-      POSTGRES_PASSWORD: simulator
-      POSTGRES_DB: simulator
-    volumes:
-      - pg_data:/var/lib/postgresql/data
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U simulator -d simulator"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-
   # ── Python FastAPI backend ──────────────────────────────────────────────────
   backend:
     build:
@@ -31,12 +14,9 @@ services:
     environment:
       - BACKEND_HOST=0.0.0.0
       - BACKEND_PORT=8000
-      - DATABASE_URL=postgresql+asyncpg://simulator:simulator@db:5432/simulator
+      - DATABASE_URL=sqlite+aiosqlite:////app/simulator.db
     volumes:
       - ./backend/app:/app/app   # hot-reload in dev
-    depends_on:
-      db:
-        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
@@ -60,9 +40,6 @@ services:
       backend:
         condition: service_healthy
     restart: unless-stopped
-
-volumes:
-  pg_data:
 
 networks:
   default:

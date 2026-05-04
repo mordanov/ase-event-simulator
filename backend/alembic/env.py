@@ -26,12 +26,9 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# Resolve sync URL from DATABASE_URL (replace asyncpg driver with psycopg2)
-_db_url = os.getenv(
-    "DATABASE_URL",
-    "postgresql+asyncpg://simulator:simulator@db:5432/simulator",
-)
-_sync_url = _db_url.replace("+asyncpg", "+psycopg2")
+# Resolve sync URL from DATABASE_URL (strip async driver suffix)
+_db_url = os.getenv("DATABASE_URL", "sqlite+aiosqlite:////app/simulator.db")
+_sync_url = _db_url.replace("+aiosqlite", "").replace("+asyncpg", "")
 config.set_main_option("sqlalchemy.url", _sync_url)
 
 target_metadata = None
@@ -39,7 +36,8 @@ target_metadata = None
 
 def run_migrations_offline() -> None:
     url = config.get_main_option("sqlalchemy.url")
-    context.configure(url=url, target_metadata=target_metadata, literal_binds=True)
+    context.configure(url=url, target_metadata=target_metadata,
+                      literal_binds=True, render_as_batch=True)
     with context.begin_transaction():
         context.run_migrations()
 
@@ -51,7 +49,8 @@ def run_migrations_online() -> None:
         poolclass=pool.NullPool,
     )
     with connectable.connect() as connection:
-        context.configure(connection=connection, target_metadata=target_metadata)
+        context.configure(connection=connection, target_metadata=target_metadata,
+                          render_as_batch=True)
         with context.begin_transaction():
             context.run_migrations()
 

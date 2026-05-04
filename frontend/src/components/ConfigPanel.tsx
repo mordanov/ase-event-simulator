@@ -5,8 +5,8 @@ import type {
 } from '../types';
 
 const DEFAULT_CONFIG: SessionConfig = {
-  devices: [{ device_type: 'smartwatch', count: 1 }],
-  scenario: 'rest',
+  devices: [{ device_type: 'random', count: 64 }],
+  scenario: 'random',
   send_mode: 'batch',
   endpoint_mode: 'fanout',
   batch_size: 10,
@@ -59,7 +59,7 @@ export function ConfigPanel({
 
   // ── Device rows ───────────────────────────────────────────────────────
   const addDevice = () =>
-    updateCfg({ devices: [...cfg.devices, { device_type: 'smartwatch', count: 1 }] });
+    updateCfg({ devices: [...cfg.devices, { device_type: 'random', count: 1 }] });
 
   const removeDevice = (i: number) =>
     updateCfg({ devices: cfg.devices.filter((_, idx) => idx !== i) });
@@ -254,7 +254,7 @@ export function ConfigPanel({
           <div style={styles.endpointModeRow}>
             <span style={styles.endpointModeLabel}>Multi-endpoint mode</span>
             <select
-              style={{ ...styles.select, flex: 1 }}
+              style={styles.select}
               value={cfg.endpoint_mode}
               onChange={e => updateCfg({ endpoint_mode: e.target.value as EndpointMode })}
             >
@@ -490,7 +490,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   countWrap: { display: 'flex', flexDirection: 'column', gap: 2 },
   endpointModeRow: {
-    display: 'flex', alignItems: 'center', gap: 8,
+    display: 'flex', flexDirection: 'column' as const, gap: 6,
     marginBottom: 8, marginTop: 2,
   },
   endpointModeLabel: {

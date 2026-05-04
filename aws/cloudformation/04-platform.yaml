@@ -3,7 +3,8 @@ Description: >
   Health Telemetry Simulator — platform stack.
   Creates ALB, ECS cluster, IAM roles, and the backend task definition.
   BackendService lives in 05-service to allow independent redeployments.
-  Depends on: 02-network (VPC + security groups), 03-persistent (ECR + EFS).
+  Depends on: 02-network (VPC + security groups), 03-persistent (ECR).
+  Database: SQLite on ECS ephemeral storage (no PostgreSQL sidecar or EFS needed).
 
 # ─── Parameters ───────────────────────────────────────────────────────────────
 
@@ -23,14 +24,6 @@ Parameters:
   ECRRepositoryUri:
     Type: String
     Description: ECR repository URI from the 03-persistent stack output.
-
-  EFSFileSystemId:
-    Type: String
-    Description: EFS file system ID from the 03-persistent stack output.
-
-  EFSAccessPointId:
-    Type: String
-    Description: EFS access point ID from the 03-persistent stack output.
 
   VPCId:
     Type: AWS::EC2::VPC::Id
@@ -99,6 +92,13 @@ Parameters:
     Type: String
     Default: "0.02"
 
+  IngestionApiKey:
+    Type: String
+    Default: "dev-key"
+    Description: >
+      API key sent in X-API-Key header when the simulator registers devices
+      with the ingestion pipeline POST /api/v1/devices endpoint.
+
   LogRetentionDays:
     Type: Number
     Default: 14
@@ -159,19 +159,6 @@ Resources:
       DefaultActions:
         - Type: forward
           TargetGroupArn: !Ref BackendTargetGroup
-
-  # ══ PostgreSQL credentials ═════════════════════════════════════════════════
-
-  DBSecret:
-    Type: AWS::SecretsManager::Secret
-    Properties:
-      Name: !Sub "/${ProjectName}/db-password"
-      Description: Auto-generated PostgreSQL password for the simulator database.
-      GenerateSecretString:
-        SecretStringTemplate: '{"username": "simulator"}'
-        GenerateStringKey: password
-        ExcludeCharacters: "\"@/\\"
-        PasswordLength: 32
 
   AppConfigSecret:
     Type: AWS::SecretsManager::Secret
@@ -263,17 +250,6 @@ Resources:
                 Action:
                   - sts:GetCallerIdentity
                 Resource: "*"
-        - PolicyName: EFSAccess
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Effect: Allow
-                Action:
-                  - elasticfilesystem:ClientMount
-                  - elasticfilesystem:ClientWrite
-                  - elasticfilesystem:ClientRootAccess
-                Resource: !Sub "arn:aws:elasticfilesystem:${AWS::Region}:${AWS::AccountId}:file-system/${EFSFileSystemId}"
-
   BackendTaskDefinition:
     Type: AWS::ECS::TaskDefinition
     Properties:
@@ -285,57 +261,12 @@ Resources:
       NetworkMode: awsvpc
       ExecutionRoleArn: !GetAtt ECSTaskExecutionRole.Arn
       TaskRoleArn: !GetAtt ECSTaskRole.Arn
-      Volumes:
-        - Name: postgres-data
-          EFSVolumeConfiguration:
-            FilesystemId: !Ref EFSFileSystemId
-            TransitEncryption: ENABLED
-            AuthorizationConfig:
-              AccessPointId: !Ref EFSAccessPointId
-              IAM: ENABLED
       ContainerDefinitions:
-
-        # ── PostgreSQL sidecar ───────────────────────────────────────────────
-        - Name: postgres
-          Image: postgres:16-alpine
-          Essential: true
-          Environment:
-            - Name: POSTGRES_USER
-              Value: simulator
-            - Name: POSTGRES_PASSWORD
-              Value: !Sub "{{resolve:secretsmanager:${DBSecret}:SecretString:password}}"
-            - Name: POSTGRES_DB
-              Value: simulator
-            # Store data in a subdirectory so postgres can init the empty EFS mount
-            - Name: PGDATA
-              Value: /var/lib/postgresql/data/pgdata
-          MountPoints:
-            - ContainerPath: /var/lib/postgresql/data
-              SourceVolume: postgres-data
-              ReadOnly: false
-          HealthCheck:
-            Command:
-              - CMD-SHELL
-              - "pg_isready -U simulator -d simulator || exit 1"
-            Interval: 10
-            Timeout: 5
-            Retries: 5
-            StartPeriod: 30
-          LogConfiguration:
-            LogDriver: awslogs
-            Options:
-              awslogs-group: !Ref BackendLogGroup
-              awslogs-region: !Ref AWS::Region
-              awslogs-stream-prefix: postgres
 
         # ── FastAPI backend ──────────────────────────────────────────────────
         - Name: backend
           Image: !Ref BackendImage
           Essential: true
-          # Wait for postgres to pass its health check before starting
-          DependsOn:
-            - ContainerName: postgres
-              Condition: HEALTHY
           PortMappings:
             - ContainerPort: 8000
               Protocol: tcp
@@ -350,9 +281,8 @@ Resources:
               Value: "true"
             - Name: SEED_DEVICE_COUNT
               Value: !Sub "${SeedDeviceCount}"
-            # postgres is a sidecar — containers in the same task share the network namespace
             - Name: DATABASE_URL
-              Value: !Sub "postgresql+asyncpg://simulator:{{resolve:secretsmanager:${DBSecret}:SecretString:password}}@localhost:5432/simulator"
+              Value: "sqlite+aiosqlite:////app/simulator.db"
             - Name: CERT_APPROVAL_DELAY_SECONDS
               Value: !Sub "${CertApprovalDelaySecs}"
             - Name: CERT_VALIDITY_DAYS
@@ -375,6 +305,8 @@ Resources:
               Value: !Sub "${DefaultMaxDevices}"
             - Name: DEFAULT_ANOMALY_RATE
               Value: !Ref DefaultAnomalyRate
+            - Name: INGESTION_API_KEY
+              Value: !Ref IngestionApiKey
           Secrets:
             - Name: CA_CERT_PEM
               ValueFrom: !Sub "${CaCertSecretArn}:cert_pem::"
@@ -395,8 +327,8 @@ Resources:
             Interval: 30
             Timeout: 5
             Retries: 3
-            # postgres startup + migrations + seed can take ~2 min combined
-            StartPeriod: 180
+            # migrations + seed can take ~30–60 s on cold start
+            StartPeriod: 90
 
 # ─── Outputs ──────────────────────────────────────────────────────────────────
 

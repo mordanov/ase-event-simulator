@@ -23,7 +23,19 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Verify DB connectivity on startup (non-fatal — simulator works without DB)
+    # Create all tables (idempotent — SQLite ephemeral storage, no migrations needed)
+    try:
+        from app.db import engine
+        from app.db import Base
+        import app.models.device_orm  # noqa: F401 — ensures Device table is registered
+
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        logger.info("DB schema ready")
+    except Exception as exc:
+        logger.warning("DB schema creation failed (ephemeral IDs will be used): %s", exc)
+
+    # Log device count
     try:
         from app.db import async_session_factory
         from app.models.device_orm import Device
@@ -33,7 +45,7 @@ async def lifespan(app: FastAPI):
             count = (await db.execute(select(func.count(Device.id)))).scalar_one()
             logger.info("DB connected — %d devices in registry", count)
     except Exception as exc:
-        logger.warning("DB not available at startup (ephemeral IDs will be used): %s", exc)
+        logger.warning("DB not available at startup: %s", exc)
 
     yield
 

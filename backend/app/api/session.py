@@ -31,7 +31,7 @@ from app.models.telemetry import (
     TransportProtocol,
 )
 from app.services.runtime_mode import is_cloud_mode
-from app.transports.sender import AWSIoTMQTTTransport, BaseTransport, HTTPTransport, make_transport
+from app.transports.sender import AWSIoTMQTTTransport, BaseTransport, HTTPTransport, make_transport, build_registration_payload
 
 logger = logging.getLogger(__name__)
 
@@ -137,19 +137,18 @@ class Session:
         try:
             from app.services.registration_service import register_devices
             fingerprints = await register_devices(device_ids, on_event=on_reg_event)
-            # Stamp each device dict with its cert fingerprint
             for d in self._generator.devices:
                 d["cert_fingerprint"] = fingerprints.get(d["device_id"], "")
-            # Load cert PEM data and wire up mTLS on HTTP transports
             await self._register_mtls_certs(fingerprints)
-            # Send a registration event (with biometrics) to all enabled endpoints
-            await self._send_registration_events()
         except Exception as exc:
             if is_cloud_mode():
                 raise RuntimeError(f"Registration failed in cloud mode: {exc}") from exc
             logger.warning("Registration failed, proceeding without certs: %s", exc)
             self._devices_registered = len(device_ids)
             self._devices_pending = 0
+
+        # Always send device profiles to configured endpoints regardless of JITR outcome.
+        await self._send_registration_events()
 
     async def _register_mtls_certs(self, fingerprints: dict[str, str]) -> None:
         """Query DB for cert PEM data and register each device cert with transports."""
@@ -183,22 +182,25 @@ class Session:
             logger.warning("mTLS cert registration skipped: %s", exc)
 
     async def _send_registration_events(self):
-        """POST a RegistrationEvent with biometrics to every enabled endpoint,
-        then append an enriched log entry with the request payload and responses."""
+        """POST device profile + biometrics to every enabled HTTP endpoint
+        (ingestion pipeline /api/v1/devices), then append an enriched log entry."""
         for d in self._generator.devices:
+            dt = d.get("device_type")
             event = RegistrationEvent(
                 device_id=d["device_id"],
                 status="registered",
-                message="Device registered — biometric profile attached",
+                message="Device registered — profile attached",
+                device_type=dt.value if hasattr(dt, "value") else str(dt) if dt else None,
+                model=d.get("model"),
+                firmware_version=d.get("firmware"),
+                os=d.get("os"),
+                user_id=d.get("user_id"),
                 height_cm=d.get("height_cm"),
                 weight_kg=d.get("weight_kg"),
                 gender=d.get("gender"),
                 birth_date=d.get("birth_date"),
             )
-            import json as _json
-            request_payload = _json.loads(event.model_dump_json(
-                exclude={"request_payload", "endpoint_responses"}
-            ))
+            request_payload = build_registration_payload(event)
 
             responses = await asyncio.gather(
                 *[t.send_registration_event(event) for t in self._transports],
@@ -431,6 +433,8 @@ async def _load_devices_from_db(device_profiles: list) -> list[dict] | None:
                         "device_id": d.device_id,
                         "user_id": d.user_id,
                         "device_type": DeviceType(d.device_type),
+                        "model": d.model,
+                        "os": d.os,
                         "firmware": d.firmware_version,
                         "gps_lat": d.gps_lat if d.gps_lat is not None else _rf(*GPS_BOUNDS["lat"], 5),
                         "gps_lon": d.gps_lon if d.gps_lon is not None else _rf(*GPS_BOUNDS["lon"], 5),

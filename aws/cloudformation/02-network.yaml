@@ -3,6 +3,7 @@ Description: >
   Health Telemetry Simulator — network stack.
   Creates VPC, public/private subnets, route tables, and security groups
   shared by all subsequent stacks. Deploy before 03-persistent and 04-platform.
+  Private subnets are kept for future use; EFS resources have been removed.
 
 # ─── Parameters ───────────────────────────────────────────────────────────────
 
@@ -65,7 +66,7 @@ Resources:
         - Key: Name
           Value: !Sub "${ProjectName}-public-2"
 
-  # ── Private subnets (EFS mount targets) ──────────────────────────────────
+  # ── Private subnets ──────────────────────────────────────────────────────
 
   PrivateSubnet1:
     Type: AWS::EC2::Subnet
@@ -151,20 +152,6 @@ Resources:
         - Key: Name
           Value: !Sub "${ProjectName}-ecs-sg"
 
-  EFSSecurityGroup:
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      GroupDescription: EFS - accept NFS from ECS tasks only
-      VpcId: !Ref VPC
-      SecurityGroupIngress:
-        - IpProtocol: tcp
-          FromPort: 2049
-          ToPort: 2049
-          SourceSecurityGroupId: !Ref ECSSecurityGroup
-      Tags:
-        - Key: Name
-          Value: !Sub "${ProjectName}-efs-sg"
-
 # ─── Outputs ──────────────────────────────────────────────────────────────────
 
 Outputs:
@@ -203,8 +190,3 @@ Outputs:
     Value: !Ref ECSSecurityGroup
     Export:
       Name: !Sub "${AWS::StackName}:ECSSecurityGroupId"
-
-  EFSSecurityGroupId:
-    Value: !Ref EFSSecurityGroup
-    Export:
-      Name: !Sub "${AWS::StackName}:EFSSecurityGroupId"

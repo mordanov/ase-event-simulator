@@ -102,6 +102,12 @@ class RegistrationEvent(BaseModel):
     timestamp: str = Field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
+    # Device profile — required by POST /api/v1/devices on the ingestion pipeline.
+    device_type: Optional[str] = None
+    model: Optional[str] = None
+    firmware_version: Optional[str] = None
+    os: Optional[str] = None
+    user_id: Optional[str] = None
     # User biometrics — included so downstream services (e.g. recommendation
     # aggregator) receive the profile data needed to call health-tip providers.
     height_cm: Optional[float] = None
@@ -180,6 +186,12 @@ class SessionConfig(BaseModel):
 
 # ─── Runtime status ───────────────────────────────────────────────────────────
 
+class EndpointError(BaseModel):
+    timestamp: str
+    message: str
+    status_code: Optional[int] = None
+
+
 class EndpointStatus(BaseModel):
     name: str
     url: str
@@ -189,6 +201,7 @@ class EndpointStatus(BaseModel):
     last_status_code: Optional[int] = None
     last_error: Optional[str] = None
     avg_latency_ms: float = 0.0
+    recent_errors: list[EndpointError] = Field(default_factory=list)
 
 
 class SessionStatus(BaseModel):

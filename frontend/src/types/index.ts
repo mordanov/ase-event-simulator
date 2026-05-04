@@ -31,6 +31,12 @@ export interface SessionConfig {
   protocols: TransportProtocol[];
 }
 
+export interface EndpointError {
+  timestamp: string;
+  message: string;
+  status_code: number | null;
+}
+
 export interface EndpointStatus {
   name: string;
   url: string;
@@ -40,6 +46,7 @@ export interface EndpointStatus {
   last_status_code: number | null;
   last_error: string | null;
   avg_latency_ms: number;
+  recent_errors: EndpointError[];
 }
 
 export interface TelemetryEvent {
@@ -77,6 +84,11 @@ export interface RegistrationEvent {
   status: 'pending' | 'rejected' | 'registered' | string;
   message: string;
   timestamp: string;
+  device_type?: string;
+  model?: string;
+  firmware_version?: string;
+  os?: string;
+  user_id?: string;
   height_cm?: number;
   weight_kg?: number;
   gender?: string;

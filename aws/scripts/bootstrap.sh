@@ -75,6 +75,7 @@ SKIP_SERVICE="${SKIP_SERVICE:-0}"
 SKIP_ACM="${SKIP_ACM:-0}"
 SKIP_CDN="${SKIP_CDN:-0}"
 SKIP_DOCKER="${SKIP_DOCKER:-0}"
+INGESTION_API_KEY="${INGESTION_API_KEY:-dev-key}"
 
 # ─── Colours ─────────────────────────────────────────────────────────────────
 
@@ -318,27 +319,21 @@ NET() { aws cloudformation describe-stacks --stack-name "$STACK_NETWORK" --regio
 VPC_ID=$(NET VPCId)
 PUBLIC_SUBNET_1=$(NET PublicSubnet1Id)
 PUBLIC_SUBNET_2=$(NET PublicSubnet2Id)
-PRIVATE_SUBNET_1=$(NET PrivateSubnet1Id)
-PRIVATE_SUBNET_2=$(NET PrivateSubnet2Id)
 ALB_SG=$(NET ALBSecurityGroupId)
 ECS_SG=$(NET ECSSecurityGroupId)
-EFS_SG=$(NET EFSSecurityGroupId)
 
-# ─── Step 3 — Persistent resources (ECR, EFS) ────────────────────────────────
+# ─── Step 3 — Persistent resources (ECR) ────────────────────────────────────
 
 if [[ "$SKIP_PERSISTENT" == "1" ]]; then
   skip "03-persistent (SKIP_PERSISTENT=1)"
 else
-  step "Persistent resources — ECR + EFS (03-persistent)"
+  step "Persistent resources — ECR (03-persistent)"
   aws cloudformation deploy \
     --template-file "$CF_DIR/03-persistent.yaml" \
     --stack-name "$STACK_PERSISTENT" \
     --region "$REGION" \
     --parameter-overrides \
         ProjectName="$PROJECT_NAME" \
-        PrivateSubnet1Id="$PRIVATE_SUBNET_1" \
-        PrivateSubnet2Id="$PRIVATE_SUBNET_2" \
-        EFSSecurityGroupId="$EFS_SG" \
     --no-fail-on-empty-changeset
   success "Persistent stack deployed: $STACK_PERSISTENT"
 fi
@@ -346,8 +341,6 @@ fi
 PERS() { aws cloudformation describe-stacks --stack-name "$STACK_PERSISTENT" --region "$REGION" \
            --query "Stacks[0].Outputs[?OutputKey==\`$1\`].OutputValue" --output text; }
 ECR_URI=$(PERS ECRRepositoryUri)
-EFS_FS_ID=$(PERS EFSFileSystemId)
-EFS_AP_ID=$(PERS EFSAccessPointId)
 success "ECR repository : $ECR_URI"
 
 # ─── Step 4 — Platform (ALB, ECS cluster, task definition) ───────────────────
@@ -388,8 +381,6 @@ else
         ProjectName="$PROJECT_NAME" \
         BackendImage="$BACKEND_IMAGE_PARAM" \
         ECRRepositoryUri="$ECR_URI" \
-        EFSFileSystemId="$EFS_FS_ID" \
-        EFSAccessPointId="$EFS_AP_ID" \
         VPCId="$VPC_ID" \
         PublicSubnet1Id="$PUBLIC_SUBNET_1" \
         PublicSubnet2Id="$PUBLIC_SUBNET_2" \
@@ -399,6 +390,7 @@ else
         DefaultHttpEndpoints="$DEFAULT_HTTP_ENDPOINTS_VAL" \
         DefaultMqttBrokerUrl="$DEFAULT_MQTT_URL_VAL" \
         DefaultMqttTopic="$TOPIC_PREFIX" \
+        IngestionApiKey="$INGESTION_API_KEY" \
     --no-fail-on-empty-changeset
   success "Platform stack deployed: $STACK_PLATFORM"
 fi
@@ -451,6 +443,7 @@ else
         DefaultHttpEndpoints="$DEFAULT_HTTP_ENDPOINTS_VAL" \
         DefaultMqttBrokerUrl="$DEFAULT_MQTT_URL_VAL" \
         DefaultMqttTopic="$TOPIC_PREFIX" \
+        IngestionApiKey="$INGESTION_API_KEY" \
     --no-fail-on-empty-changeset
   success "Platform stack updated: BackendImage=$FULL_IMAGE"
 fi

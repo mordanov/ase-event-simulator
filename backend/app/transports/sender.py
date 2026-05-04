@@ -18,13 +18,16 @@ import tempfile
 import time
 import uuid
 from abc import ABC, abstractmethod
+from datetime import datetime, timezone
 from typing import Optional
+from urllib.parse import urlparse
 
 import httpx
 
 from app.models.telemetry import (
     BatchPayload,
     EndpointConfig,
+    EndpointError,
     EndpointStatus,
     RegistrationEvent,
     TelemetryEvent,
@@ -33,6 +36,21 @@ from app.models.telemetry import (
 from app.services.runtime_mode import is_cloud_mode
 
 logger = logging.getLogger(__name__)
+
+
+def build_registration_payload(event: RegistrationEvent) -> dict:
+    """Return the exact JSON body sent to /api/v1/devices for a device registration."""
+    raw = {
+        "device_id":        event.device_id,
+        "device_type":      event.device_type,
+        "model":            event.model or "SimDevice",
+        "firmware_version": event.firmware_version or "1.0.0",
+        "os":               event.os or "SimOS",
+        "user_id":          event.user_id or event.device_id,
+        "height_cm":        event.height_cm,
+        "weight_kg":        event.weight_kg,
+    }
+    return {k: v for k, v in raw.items() if v is not None}
 
 
 # ─── Base ─────────────────────────────────────────────────────────────────────
@@ -55,6 +73,14 @@ class BaseTransport(ABC):
         else:
             self.status.error_count += 1
             self.status.last_error = err
+            entry = EndpointError(
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                message=err or (f"HTTP {code}" if code else "unknown error"),
+                status_code=code,
+            )
+            self.status.recent_errors.append(entry)
+            if len(self.status.recent_errors) > 50:
+                self.status.recent_errors = self.status.recent_errors[-50:]
         if code:
             self.status.last_status_code = code
         self._latencies.append(latency_ms)
@@ -128,7 +154,8 @@ class HTTPTransport(BaseTransport):
             resp = await client.post(self.endpoint.url, content=event.model_dump_json())
             latency = (time.perf_counter() - t0) * 1000
             ok = resp.status_code < 400
-            self._record(latency, ok, code=resp.status_code)
+            err = "" if ok else f"HTTP {resp.status_code}: {resp.text[:300]}"
+            self._record(latency, ok, code=resp.status_code, err=err)
             return ok
         except Exception as exc:
             latency = (time.perf_counter() - t0) * 1000
@@ -137,11 +164,24 @@ class HTTPTransport(BaseTransport):
             return False
 
     async def send_registration_event(self, event: RegistrationEvent) -> dict:
+        # Derive the ingestion pipeline device-registration URL from the base host.
+        # If the user configured http://host/ingest for telemetry, registration
+        # goes to http://host/api/v1/devices.
+        parsed = urlparse(self.endpoint.url)
+        reg_url = f"{parsed.scheme}://{parsed.netloc}/api/v1/devices"
+
+        api_key = os.getenv("INGESTION_API_KEY", "dev-key")
+        payload = build_registration_payload(event)
+
+        base = {"name": self.endpoint.name, "url": reg_url}
         client = await self._get_client()
         t0 = time.perf_counter()
-        base = {"name": self.endpoint.name, "url": self.endpoint.url}
         try:
-            resp = await client.post(self.endpoint.url, content=event.model_dump_json())
+            resp = await client.post(
+                reg_url,
+                content=json.dumps(payload),
+                headers={"X-API-Key": api_key},
+            )
             latency = (time.perf_counter() - t0) * 1000
             ok = resp.status_code < 400
             self._record(latency, ok, code=resp.status_code)
@@ -149,7 +189,7 @@ class HTTPTransport(BaseTransport):
         except Exception as exc:
             latency = (time.perf_counter() - t0) * 1000
             self._record(latency, False, err=str(exc))
-            logger.warning("HTTP send_registration_event failed [%s]: %s", self.endpoint.url, exc)
+            logger.warning("HTTP send_registration_event failed [%s]: %s", reg_url, exc)
             return {**base, "status_code": None, "body": str(exc)}
 
     async def send_batch(self, batch: BatchPayload) -> bool:

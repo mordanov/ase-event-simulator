@@ -24,10 +24,8 @@ bootstrap_environment()
 
 SEED_COUNT = int(os.getenv("SEED_DEVICE_COUNT", "1000"))
 
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "postgresql+asyncpg://simulator:simulator@db:5432/simulator",
-).replace("+asyncpg", "+psycopg2")
+_raw_url = os.getenv("DATABASE_URL", "sqlite+aiosqlite:////app/simulator.db")
+DATABASE_URL = _raw_url.replace("+aiosqlite", "").replace("+asyncpg", "+psycopg2")
 
 # Device type distribution (must sum to 1.0)
 TYPE_DISTRIBUTION = {
@@ -42,6 +40,20 @@ FIRMWARE_VERSIONS = {
     "fitness_tracker": ["1.5.1", "1.6.0"],
     "smartphone":      ["14.0", "14.4", "15.0"],
     "laptop":          ["11.0", "12.0"],
+}
+
+DEVICE_MODELS = {
+    "smartwatch":      "SimWatch Pro",
+    "fitness_tracker": "SimBand Ultra",
+    "smartphone":      "SimPhone X",
+    "laptop":          "SimBook Air",
+}
+
+DEVICE_OS = {
+    "smartwatch":      "WatchOS-Sim 4.0",
+    "fitness_tracker": "FitOS-Sim 2.1",
+    "smartphone":      "AndroidOS-Sim 14",
+    "laptop":          "SimOS 15.0",
 }
 
 GPS_CAPABLE = {"smartwatch", "smartphone"}
@@ -71,6 +83,8 @@ def _make_device(device_type: str, user_id: str) -> dict:
     return {
         "device_id": f"{device_type}-{short}",
         "device_type": device_type,
+        "model": DEVICE_MODELS[device_type],
+        "os": DEVICE_OS[device_type],
         "user_id": user_id,
         "firmware_version": random.choice(FIRMWARE_VERSIONS[device_type]),
         "gps_lat": _rf(*GPS_BOUNDS["lat"]) if has_gps else None,
@@ -90,7 +104,7 @@ def seed(count: int = SEED_COUNT) -> int:
     from app.models.device_orm import Device  # noqa: PLC0415
     from app.db import Base  # noqa: PLC0415
 
-    Base.metadata.create_all(engine)  # safety net — alembic should have run first
+    Base.metadata.create_all(engine)  # safety net (app lifespan also runs create_all)
 
     with Session(engine) as session:
         existing = session.execute(select(func.count()).select_from(Device)).scalar_one()

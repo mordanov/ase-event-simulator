@@ -7,7 +7,7 @@
 #   06-acm        → ACM certificate (us-east-1)
 #   05-service    → ECS service
 #   04-platform   → ALB, ECS cluster, task definition
-#   03-persistent → ECR (images deleted first) + EFS (mount targets deleted first)
+#   03-persistent → ECR (images deleted first)
 #   02-network    → VPC, subnets, security groups
 #   01-jitr       → JITR Lambda, IoT Rule, Thing Type
 #   00-buckets    → S3 buckets (emptied first, then deleted)
@@ -177,7 +177,6 @@ echo ""
 echo -e "  Stacks to delete : ${YELLOW}${STACK_CDN}, ${STACK_ACM} (us-east-1), ${STACK_SERVICE},${NC}"
 echo -e "                     ${YELLOW}${STACK_PLATFORM}, ${STACK_PERSISTENT}, ${STACK_NETWORK}, ${STACK_JITR}, ${STACK_BUCKETS}${NC}"
 echo -e "  ECR repository   : ${YELLOW}${PROJECT_NAME}-backend${NC} (images deleted, then repo)"
-echo -e "  EFS file system  : ${YELLOW}Mount targets + file system will be deleted${NC}"
 echo -e "  S3 buckets       : ${YELLOW}${PROJECT_NAME}-deploy-${ACCOUNT_ID}-${REGION}${NC}"
 echo -e "                     ${YELLOW}${PROJECT_NAME}-frontend-${ACCOUNT_ID}-${REGION}${NC}"
 echo ""
@@ -249,7 +248,7 @@ else
   step "Platform — ALB / ECS cluster / task definition (04-platform)"
 
   # Force-delete Secrets Manager secrets immediately (no 30-day recovery window).
-  for SECRET_ID in "/${PROJECT_NAME}/db-password" "/${PROJECT_NAME}/ca-cert"; do
+  for SECRET_ID in "/${PROJECT_NAME}/ca-cert"; do
     if aws secretsmanager describe-secret \
         --secret-id "$SECRET_ID" \
         --region "$REGION" &>/dev/null; then
@@ -272,9 +271,8 @@ fi
 if [[ "$SKIP_PERSISTENT" == "1" ]]; then
   skip "03-persistent"
 else
-  step "Persistent resources — ECR + EFS (03-persistent)"
+  step "Persistent resources — ECR (03-persistent)"
 
-  EFS_FS_ID=$(stack_output "$STACK_PERSISTENT" "EFSFileSystemId")
   ECR_REPO_NAME="${PROJECT_NAME}-backend"
 
   # Delete ECR images then the repository (DeletionPolicy:Retain, so CF leaves it).
@@ -300,36 +298,6 @@ else
     [[ "$DRY_RUN" != "1" ]] && success "ECR repository deleted"
   else
     warn "ECR repository $ECR_REPO_NAME not found"
-  fi
-
-  # Delete EFS file system (DeletionPolicy:Retain means CF leaves it behind).
-  # Must delete all mount targets first; EFS rejects deletion while they exist.
-  if [[ -n "$EFS_FS_ID" && "$EFS_FS_ID" != "None" ]]; then
-    info "Deleting EFS file system: $EFS_FS_ID"
-    if [[ "$DRY_RUN" != "1" ]]; then
-      MT_IDS=$(aws efs describe-mount-targets \
-        --file-system-id "$EFS_FS_ID" --region "$REGION" \
-        --query 'MountTargets[].MountTargetId' --output text 2>/dev/null || true)
-      for mt in $MT_IDS; do
-        info "  Deleting mount target: $mt"
-        aws efs delete-mount-target --mount-target-id "$mt" --region "$REGION"
-      done
-      if [[ -n "$MT_IDS" ]]; then
-        info "  Waiting for mount targets to be deleted..."
-        until [[ $(aws efs describe-mount-targets \
-            --file-system-id "$EFS_FS_ID" --region "$REGION" \
-            --query 'length(MountTargets)' --output text 2>/dev/null) == "0" ]]; do
-          sleep 5
-        done
-      fi
-      aws efs delete-file-system --file-system-id "$EFS_FS_ID" --region "$REGION"
-      success "EFS file system deleted: $EFS_FS_ID"
-    else
-      dry "aws efs delete-mount-target (all mount targets for $EFS_FS_ID)"
-      dry "aws efs delete-file-system --file-system-id $EFS_FS_ID"
-    fi
-  else
-    warn "EFS file system ID not found in stack outputs — skipping EFS deletion"
   fi
 
   delete_stack "$STACK_PERSISTENT" "$REGION"
