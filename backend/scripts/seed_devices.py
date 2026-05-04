@@ -47,6 +47,11 @@ FIRMWARE_VERSIONS = {
 GPS_CAPABLE = {"smartwatch", "smartphone"}
 GPS_BOUNDS = {"lat": (40.0, 55.0), "lon": (-10.0, 40.0)}
 
+GENDERS = ["male", "female"]
+HEIGHT_RANGE = {"male": (165.0, 195.0), "female": (155.0, 180.0)}
+WEIGHT_RANGE = {"male": (65.0, 100.0), "female": (50.0,  85.0)}
+BIRTH_YEAR_RANGE = (1955, 2005)
+
 
 def _rf(lo: float, hi: float, decimals: int = 5) -> float:
     return round(random.uniform(lo, hi), decimals)
@@ -59,6 +64,10 @@ def _make_user_pool(size: int) -> list[str]:
 def _make_device(device_type: str, user_id: str) -> dict:
     short = uuid.uuid4().hex[:8]
     has_gps = device_type in GPS_CAPABLE
+    gender = random.choice(GENDERS)
+    birth_year = random.randint(*BIRTH_YEAR_RANGE)
+    birth_month = random.randint(1, 12)
+    birth_day = random.randint(1, 28)
     return {
         "device_id": f"{device_type}-{short}",
         "device_type": device_type,
@@ -66,6 +75,10 @@ def _make_device(device_type: str, user_id: str) -> dict:
         "firmware_version": random.choice(FIRMWARE_VERSIONS[device_type]),
         "gps_lat": _rf(*GPS_BOUNDS["lat"]) if has_gps else None,
         "gps_lon": _rf(*GPS_BOUNDS["lon"]) if has_gps else None,
+        "height_cm": round(random.uniform(*HEIGHT_RANGE[gender]), 1),
+        "weight_kg": round(random.uniform(*WEIGHT_RANGE[gender]), 1),
+        "gender": gender,
+        "birth_date": f"{birth_year:04d}-{birth_month:02d}-{birth_day:02d}",
         "is_active": True,
     }
 

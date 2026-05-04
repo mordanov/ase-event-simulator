@@ -102,6 +102,12 @@ class RegistrationEvent(BaseModel):
     timestamp: str = Field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
+    # User biometrics — included so downstream services (e.g. recommendation
+    # aggregator) receive the profile data needed to call health-tip providers.
+    height_cm: Optional[float] = None
+    weight_kg: Optional[float] = None
+    gender: Optional[str] = None
+    birth_date: Optional[str] = None  # YYYY-MM-DD
 
 
 class TelemetryEvent(BaseModel):

@@ -26,6 +26,7 @@ from app.models.telemetry import (
     BatchPayload,
     EndpointConfig,
     EndpointStatus,
+    RegistrationEvent,
     TelemetryEvent,
     TransportProtocol,
 )
@@ -68,6 +69,10 @@ class BaseTransport(ABC):
     @abstractmethod
     async def send_batch(self, batch: BatchPayload) -> bool:
         ...
+
+    async def send_registration_event(self, event: RegistrationEvent) -> bool:
+        """Send a registration event to the endpoint. Default: no-op for mock transports."""
+        return True
 
 
 # ─── HTTP ─────────────────────────────────────────────────────────────────────
@@ -128,6 +133,21 @@ class HTTPTransport(BaseTransport):
             latency = (time.perf_counter() - t0) * 1000
             self._record(latency, False, err=str(exc))
             logger.warning("HTTP send_event failed [%s]: %s", self.endpoint.url, exc)
+            return False
+
+    async def send_registration_event(self, event: RegistrationEvent) -> bool:
+        client = await self._get_client()
+        t0 = time.perf_counter()
+        try:
+            resp = await client.post(self.endpoint.url, content=event.model_dump_json())
+            latency = (time.perf_counter() - t0) * 1000
+            ok = resp.status_code < 400
+            self._record(latency, ok, code=resp.status_code)
+            return ok
+        except Exception as exc:
+            latency = (time.perf_counter() - t0) * 1000
+            self._record(latency, False, err=str(exc))
+            logger.warning("HTTP send_registration_event failed [%s]: %s", self.endpoint.url, exc)
             return False
 
     async def send_batch(self, batch: BatchPayload) -> bool:

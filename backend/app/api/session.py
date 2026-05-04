@@ -142,6 +142,8 @@ class Session:
                 d["cert_fingerprint"] = fingerprints.get(d["device_id"], "")
             # Load cert PEM data and wire up mTLS on HTTP transports
             await self._register_mtls_certs(fingerprints)
+            # Send a registration event (with biometrics) to all enabled endpoints
+            await self._send_registration_events()
         except Exception as exc:
             if is_cloud_mode():
                 raise RuntimeError(f"Registration failed in cloud mode: {exc}") from exc
@@ -179,6 +181,24 @@ class Session:
                     t.register_device_cert(d.device_id, d.cert_pem, d.cert_key_pem)
         except Exception as exc:
             logger.warning("mTLS cert registration skipped: %s", exc)
+
+    async def _send_registration_events(self):
+        """POST a RegistrationEvent with biometrics to every enabled HTTP endpoint."""
+        tasks = []
+        for d in self._generator.devices:
+            event = RegistrationEvent(
+                device_id=d["device_id"],
+                status="registered",
+                message="Device registered — biometric profile attached",
+                height_cm=d.get("height_cm"),
+                weight_kg=d.get("weight_kg"),
+                gender=d.get("gender"),
+                birth_date=d.get("birth_date"),
+            )
+            for transport in self._transports:
+                tasks.append(transport.send_registration_event(event))
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _run_immediate(self):
         """Per interval: one event per device fanned out to every transport.
@@ -393,6 +413,10 @@ async def _load_devices_from_db(device_profiles: list) -> list[dict] | None:
                         "firmware": d.firmware_version,
                         "gps_lat": d.gps_lat if d.gps_lat is not None else _rf(*GPS_BOUNDS["lat"], 5),
                         "gps_lon": d.gps_lon if d.gps_lon is not None else _rf(*GPS_BOUNDS["lon"], 5),
+                        "height_cm": d.height_cm,
+                        "weight_kg": d.weight_kg,
+                        "gender": d.gender,
+                        "birth_date": d.birth_date,
                     })
         return devices if devices else None
     except Exception as exc:

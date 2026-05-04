@@ -16,6 +16,10 @@ class Device(Base):
     firmware_version: Mapped[str] = mapped_column(String(20), nullable=False)
     gps_lat: Mapped[float | None] = mapped_column(Float, nullable=True)
     gps_lon: Mapped[float | None] = mapped_column(Float, nullable=True)
+    height_cm: Mapped[float | None] = mapped_column(Float, nullable=True)
+    weight_kg: Mapped[float | None] = mapped_column(Float, nullable=True)
+    gender: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    birth_date: Mapped[str | None] = mapped_column(String(10), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
     created_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
