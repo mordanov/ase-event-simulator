@@ -6,6 +6,7 @@ MQTT / WebSocket / gRPC are *mock* senders — they simulate the protocol
 handshake and payload serialisation but do not require a real broker.
 HTTP is fully real (fires actual HTTP requests to configured endpoints).
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -16,10 +17,9 @@ import random
 import shutil
 import tempfile
 import time
-import uuid
 from abc import ABC, abstractmethod
-from datetime import datetime, timezone
-from typing import Optional, TypedDict
+from datetime import UTC, datetime
+from typing import TypedDict
 from urllib.parse import urlparse
 
 import httpx
@@ -40,27 +40,28 @@ logger = logging.getLogger(__name__)
 
 class SendResult(TypedDict, total=False):
     ok: bool
-    status_code: Optional[int]
-    body: Optional[dict]
-    error: Optional[str]
+    status_code: int | None
+    body: dict | None
+    error: str | None
 
 
 def build_registration_payload(event: RegistrationEvent) -> dict:
     """Return the exact JSON body sent to /api/v1/devices for a device registration."""
     raw = {
-        "device_id":        event.device_id,
-        "device_type":      event.device_type,
-        "model":            event.model or "SimDevice",
+        "device_id": event.device_id,
+        "device_type": event.device_type,
+        "model": event.model or "SimDevice",
         "firmware_version": event.firmware_version or "1.0.0",
-        "os":               event.os or "SimOS",
-        "user_id":          event.user_id or event.device_id,
-        "height_cm":        event.height_cm,
-        "weight_kg":        event.weight_kg,
+        "os": event.os or "SimOS",
+        "user_id": event.user_id or event.device_id,
+        "height_cm": event.height_cm,
+        "weight_kg": event.weight_kg,
     }
     return {k: v for k, v in raw.items() if v is not None}
 
 
 # ─── Base ─────────────────────────────────────────────────────────────────────
+
 
 class BaseTransport(ABC):
     protocol: TransportProtocol
@@ -74,14 +75,14 @@ class BaseTransport(ABC):
         )
         self._latencies: list[float] = []
 
-    def _record(self, latency_ms: float, ok: bool, code: Optional[int] = None, err: str = ""):
+    def _record(self, latency_ms: float, ok: bool, code: int | None = None, err: str = ""):
         if ok:
             self.status.success_count += 1
         else:
             self.status.error_count += 1
             self.status.last_error = err
             entry = EndpointError(
-                timestamp=datetime.now(timezone.utc).isoformat(),
+                timestamp=datetime.now(UTC).isoformat(),
                 message=err or (f"HTTP {code}" if code else "unknown error"),
                 status_code=code,
             )
@@ -96,31 +97,34 @@ class BaseTransport(ABC):
         self.status.avg_latency_ms = round(sum(self._latencies) / len(self._latencies), 2)
 
     @abstractmethod
-    async def send_event(self, event: TelemetryEvent) -> SendResult:
-        ...
+    async def send_event(self, event: TelemetryEvent) -> SendResult: ...
 
     @abstractmethod
-    async def send_batch(self, batch: BatchPayload) -> SendResult:
-        ...
+    async def send_batch(self, batch: BatchPayload) -> SendResult: ...
 
     async def send_registration_event(self, event: RegistrationEvent) -> dict:
         """Send a registration event. Returns {"name", "url", "status_code", "body"}."""
-        return {"name": self.endpoint.name, "url": self.endpoint.url,
-                "status_code": None, "body": "(mock transport — not sent)"}
+        return {
+            "name": self.endpoint.name,
+            "url": self.endpoint.url,
+            "status_code": None,
+            "body": "(mock transport — not sent)",
+        }
 
 
 # ─── HTTP ─────────────────────────────────────────────────────────────────────
+
 
 class HTTPTransport(BaseTransport):
     protocol = TransportProtocol.HTTP
 
     def __init__(self, endpoint: EndpointConfig):
         super().__init__(endpoint)
-        self._client: Optional[httpx.AsyncClient] = None
+        self._client: httpx.AsyncClient | None = None
         # mTLS: keyed by cert fingerprint
         self._mtls_clients: dict[str, httpx.AsyncClient] = {}
-        self._cert_files: dict[str, tuple[str, str]] = {}   # fingerprint → (cert_path, key_path)
-        self._tmpdir: Optional[str] = None
+        self._cert_files: dict[str, tuple[str, str]] = {}  # fingerprint → (cert_path, key_path)
+        self._tmpdir: str | None = None
         self.last_credit_results: list[dict] = []  # populated after each send_event/send_batch
 
     def register_device_cert(self, fingerprint: str, cert_pem: str, key_pem: str) -> None:
@@ -129,14 +133,14 @@ class HTTPTransport(BaseTransport):
             self._tmpdir = tempfile.mkdtemp(prefix="sim_certs_")
         tag = fingerprint[:16]
         cert_path = os.path.join(self._tmpdir, f"{tag}.crt")
-        key_path  = os.path.join(self._tmpdir, f"{tag}.key")
+        key_path = os.path.join(self._tmpdir, f"{tag}.key")
         with open(cert_path, "w") as f:
             f.write(cert_pem)
         with open(key_path, "w") as f:
             f.write(key_pem)
         self._cert_files[fingerprint] = (cert_path, key_path)
 
-    async def _get_client(self, fingerprint: Optional[str] = None) -> httpx.AsyncClient:
+    async def _get_client(self, fingerprint: str | None = None) -> httpx.AsyncClient:
         if fingerprint and fingerprint in self._cert_files:
             if fingerprint not in self._mtls_clients or self._mtls_clients[fingerprint].is_closed:
                 cert_path, key_path = self._cert_files[fingerprint]
@@ -144,7 +148,7 @@ class HTTPTransport(BaseTransport):
                     timeout=httpx.Timeout(10.0),
                     headers={"Content-Type": "application/json", **self.endpoint.headers},
                     cert=(cert_path, key_path),
-                    verify=False,   # self-signed CA; set verify=ca_cert_path for AWS IoT Core
+                    verify=False,  # self-signed CA; set verify=ca_cert_path for AWS IoT Core
                 )
             return self._mtls_clients[fingerprint]
 
@@ -164,7 +168,7 @@ class HTTPTransport(BaseTransport):
             ok = resp.status_code < 400
             err = "" if ok else f"HTTP {resp.status_code}: {resp.text[:300]}"
             self._record(latency, ok, code=resp.status_code, err=err)
-            body: Optional[dict] = None
+            body: dict | None = None
             try:
                 body = resp.json()
                 if resp.status_code == 200 and body:
@@ -218,7 +222,7 @@ class HTTPTransport(BaseTransport):
             ok = resp.status_code < 400
             err = "" if ok else f"HTTP {resp.status_code}: {resp.text[:300]}"
             self._record(latency, ok, code=resp.status_code, err=err)
-            body: Optional[dict] = None
+            body: dict | None = None
             try:
                 body = resp.json()
                 if resp.status_code == 200 and body:
@@ -245,6 +249,7 @@ class HTTPTransport(BaseTransport):
 
 # ─── MQTT (AWS IoT Core, MQTT5, mTLS) ────────────────────────────────────────
 
+
 class AWSIoTMQTTTransport(BaseTransport):
     """
     Real MQTT5 transport for AWS IoT Core using aws-iot-device-sdk-python-v2.
@@ -260,16 +265,17 @@ class AWSIoTMQTTTransport(BaseTransport):
     Topic prefix: taken from endpoint.headers["topic"] or "health/telemetry".
     Each event is published to  <prefix>/<device_id>.
     """
+
     protocol = TransportProtocol.MQTT
 
-    _ENV_CA   = os.getenv("AWS_IOT_CA_FILE",   "")   # Amazon root CA (optional)
+    _ENV_CA = os.getenv("AWS_IOT_CA_FILE", "")  # Amazon root CA (optional)
 
     def __init__(self, endpoint: EndpointConfig):
         super().__init__(endpoint)
         # Per-device cert files: device_id → (cert_path, key_path)
         self._cert_files: dict[str, tuple[str, str]] = {}
-        self._mqtt_clients: dict[str, object] = {}   # device_id → awscrt mqtt5.Client
-        self._tmpdir: Optional[str] = None
+        self._mqtt_clients: dict[str, object] = {}  # device_id → awscrt mqtt5.Client
+        self._tmpdir: str | None = None
 
     # ── endpoint / topic helpers ──────────────────────────────────────────────
 
@@ -279,7 +285,7 @@ class AWSIoTMQTTTransport(BaseTransport):
         url = self.endpoint.url
         for prefix in ("mqtts://", "mqtt://"):
             if url.lower().startswith(prefix):
-                url = url[len(prefix):]
+                url = url[len(prefix) :]
         return url.split(":")[0].rstrip("/")
 
     @property
@@ -294,26 +300,29 @@ class AWSIoTMQTTTransport(BaseTransport):
             self._tmpdir = tempfile.mkdtemp(prefix="sim_mqtt_certs_")
         safe = device_id.replace("/", "_")[:48]
         cert_path = os.path.join(self._tmpdir, f"{safe}.crt")
-        key_path  = os.path.join(self._tmpdir, f"{safe}.key")
+        key_path = os.path.join(self._tmpdir, f"{safe}.key")
         with open(cert_path, "w") as f:
             f.write(cert_pem)
         with open(key_path, "w") as f:
             f.write(key_pem)
         self._cert_files[device_id] = (cert_path, key_path)
 
-    def _cert_for(self, device_id: str) -> Optional[tuple[str, str]]:
+    def _cert_for(self, device_id: str) -> tuple[str, str] | None:
         return self._cert_files.get(device_id)
 
     # ── MQTT5 client per device ───────────────────────────────────────────────
 
-    async def _get_mqtt_client(self, device_id: str) -> Optional[object]:
+    async def _get_mqtt_client(self, device_id: str) -> object | None:
         if device_id in self._mqtt_clients:
             return self._mqtt_clients[device_id]
 
         certs = self._cert_for(device_id)
         if not certs:
             if is_cloud_mode():
-                logger.error("MQTT cert missing for device %s (cloud mode requires per-device cert)", device_id)
+                logger.error(
+                    "MQTT cert missing for device %s (cloud mode requires per-device cert)",
+                    device_id,
+                )
             return None
 
         try:
@@ -371,8 +380,9 @@ class AWSIoTMQTTTransport(BaseTransport):
         client = await self._get_mqtt_client(event.device_id)
         if client is None:
             if is_cloud_mode():
-                self._record(0.0, False, err="Cloud mode requires real MQTT client + per-device cert")
-                return {"ok": False, "status_code": None, "body": None, "error": "Cloud mode requires real MQTT client + per-device cert"}
+                _err = "Cloud mode requires real MQTT client + per-device cert"
+                self._record(0.0, False, err=_err)
+                return {"ok": False, "status_code": None, "body": None, "error": _err}
             return await self._mock_publish(event.model_dump_json(), event.device_id)
         return await self._publish(client, event.device_id, event.model_dump_json())
 
@@ -383,14 +393,17 @@ class AWSIoTMQTTTransport(BaseTransport):
 
     async def _publish(self, client, device_id: str, payload: str) -> SendResult:
         from awscrt import mqtt5 as crt_mqtt5
+
         topic = f"{self._topic_prefix}/{device_id}"
         t0 = time.perf_counter()
         try:
-            future = client.publish(crt_mqtt5.PublishPacket(
-                topic=topic,
-                payload=payload.encode(),
-                qos=crt_mqtt5.QoS.AT_LEAST_ONCE,
-            ))
+            future = client.publish(
+                crt_mqtt5.PublishPacket(
+                    topic=topic,
+                    payload=payload.encode(),
+                    qos=crt_mqtt5.QoS.AT_LEAST_ONCE,
+                )
+            )
             # future is concurrent.futures.Future — bridge to asyncio
             await asyncio.wrap_future(future)
             latency = (time.perf_counter() - t0) * 1000
@@ -429,11 +442,13 @@ class AWSIoTMQTTTransport(BaseTransport):
 
 # ─── WebSocket mock ───────────────────────────────────────────────────────────
 
+
 class WebSocketMockTransport(BaseTransport):
     """
     Simulates WebSocket frame send without a real WS server.
     Latency slightly higher than MQTT (2–12 ms) to reflect TCP + framing.
     """
+
     protocol = TransportProtocol.WEBSOCKET
 
     async def send_event(self, event: TelemetryEvent) -> SendResult:
@@ -454,12 +469,14 @@ class WebSocketMockTransport(BaseTransport):
 
 # ─── gRPC mock ────────────────────────────────────────────────────────────────
 
+
 class GRPCMockTransport(BaseTransport):
     """
     Simulates gRPC unary call without a real server.
     Serialises event to JSON (production would use protobuf).
     Latency 3–15 ms to reflect HTTP/2 + serialisation overhead.
     """
+
     protocol = TransportProtocol.GRPC
 
     async def send_event(self, event: TelemetryEvent) -> SendResult:
@@ -476,11 +493,14 @@ class GRPCMockTransport(BaseTransport):
         # Simulate gRPC status codes: 0=OK, 14=UNAVAILABLE
         code = 0 if ok else 14
         self._record(latency, ok, code=code)
-        logger.debug("gRPC mock %s → %s (%d bytes) status=%d", method, self.endpoint.url, len(payload), code)
+        logger.debug(
+            "gRPC mock %s → %s (%d bytes) status=%d", method, self.endpoint.url, len(payload), code
+        )
         return {"ok": ok, "status_code": code, "body": None, "error": None}
 
 
 # ─── Local plain-MQTT transport ──────────────────────────────────────────────
+
 
 class LocalMqttTransport(BaseTransport):
     """Plain MQTT (no TLS) transport for local brokers such as Mosquitto.
@@ -488,6 +508,7 @@ class LocalMqttTransport(BaseTransport):
     Used when the broker URL does not match the AWS IoT Core hostname pattern.
     Publishes each event as a JSON payload to `<topic_prefix>/<device_id>`.
     """
+
     protocol = TransportProtocol.MQTT
 
     def __init__(self, endpoint: EndpointConfig):
@@ -508,6 +529,7 @@ class LocalMqttTransport(BaseTransport):
         t0 = time.perf_counter()
         try:
             import aiomqtt
+
             topic = f"{self._topic_prefix}/{device_id}"
             async with aiomqtt.Client(hostname=self._host, port=self._port) as client:
                 await client.publish(topic, payload.encode(), qos=1)
@@ -532,13 +554,17 @@ def make_transport(endpoint: EndpointConfig) -> BaseTransport:
         parsed = urlparse(endpoint.url)
         host = parsed.hostname or ""
         # Route to AWS IoT transport only for real AWS IoT Core endpoints
-        cls = AWSIoTMQTTTransport if _AWS_IOT_HOST_PATTERN in host and "amazonaws.com" in host else LocalMqttTransport
+        cls = (
+            AWSIoTMQTTTransport
+            if _AWS_IOT_HOST_PATTERN in host and "amazonaws.com" in host
+            else LocalMqttTransport
+        )
         return cls(endpoint)
 
     mapping = {
-        TransportProtocol.HTTP:      HTTPTransport,
+        TransportProtocol.HTTP: HTTPTransport,
         TransportProtocol.WEBSOCKET: WebSocketMockTransport,
-        TransportProtocol.GRPC:      GRPCMockTransport,
+        TransportProtocol.GRPC: GRPCMockTransport,
     }
     cls = mapping.get(endpoint.protocol)
     if cls is None:

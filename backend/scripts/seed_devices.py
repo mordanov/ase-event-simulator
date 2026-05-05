@@ -5,13 +5,15 @@ Usage (from /app directory inside the container or local venv):
     python -m scripts.seed_devices
     SEED_DEVICE_COUNT=500 python -m scripts.seed_devices
 """
+
 from __future__ import annotations
 
+import datetime as _dt
 import os
 import random
 import uuid
 
-from sqlalchemy import create_engine, func, select, text
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
 from app.env_loader import bootstrap_environment
@@ -27,48 +29,47 @@ SEED_COUNT = int(os.getenv("SEED_DEVICE_COUNT", "1000"))
 _raw_url = os.getenv("DATABASE_URL", "sqlite+aiosqlite:////app/simulator.db")
 DATABASE_URL = _raw_url.replace("+aiosqlite", "").replace("+asyncpg", "+psycopg2")
 
+_CURRENT_YEAR = _dt.date.today().year
+
 # Device type distribution (must sum to 1.0)
 TYPE_DISTRIBUTION = {
-    "smartwatch":      0.35,
+    "smartwatch": 0.35,
     "fitness_tracker": 0.30,
-    "smartphone":      0.25,
-    "laptop":          0.10,
+    "smartphone": 0.25,
+    "laptop": 0.10,
 }
 
 FIRMWARE_VERSIONS = {
-    "smartwatch":      ["2.1.0", "2.2.3", "3.0.0"],
+    "smartwatch": ["2.1.0", "2.2.3", "3.0.0"],
     "fitness_tracker": ["1.5.1", "1.6.0"],
-    "smartphone":      ["14.0", "14.4", "15.0"],
-    "laptop":          ["11.0", "12.0"],
+    "smartphone": ["14.0", "14.4", "15.0"],
+    "laptop": ["11.0", "12.0"],
 }
 
 DEVICE_MODELS = {
-    "smartwatch":      "SimWatch Pro",
+    "smartwatch": "SimWatch Pro",
     "fitness_tracker": "SimBand Ultra",
-    "smartphone":      "SimPhone X",
-    "laptop":          "SimBook Air",
+    "smartphone": "SimPhone X",
+    "laptop": "SimBook Air",
 }
 
 DEVICE_OS = {
-    "smartwatch":      "WatchOS-Sim 4.0",
+    "smartwatch": "WatchOS-Sim 4.0",
     "fitness_tracker": "FitOS-Sim 2.1",
-    "smartphone":      "AndroidOS-Sim 14",
-    "laptop":          "SimOS 15.0",
+    "smartphone": "AndroidOS-Sim 14",
+    "laptop": "SimOS 15.0",
 }
 
 GPS_CAPABLE = {"smartwatch", "smartphone"}
 GPS_BOUNDS = {"lat": (40.0, 55.0), "lon": (-10.0, 40.0)}
 
 # Gender distribution: female 62%, male 33%, not_defined 5%
-GENDER_CHOICES  = ["female", "male", "not_defined"]
-GENDER_WEIGHTS  = [0.62,     0.33,   0.05]
+GENDER_CHOICES = ["female", "male", "not_defined"]
+GENDER_WEIGHTS = [0.62, 0.33, 0.05]
 
-AGE_RANGE    = {"male": (20, 75), "female": (18, 70), "not_defined": (18, 75)}
+AGE_RANGE = {"male": (20, 75), "female": (18, 70), "not_defined": (18, 75)}
 HEIGHT_RANGE = {"male": (163.0, 195.0), "female": (150.0, 178.0), "not_defined": (150.0, 195.0)}
-WEIGHT_RANGE = {"male": (45.0, 130.0),  "female": (35.0, 110.0),  "not_defined": (35.0, 130.0)}
-
-import datetime as _dt
-_CURRENT_YEAR = _dt.date.today().year
+WEIGHT_RANGE = {"male": (45.0, 130.0), "female": (35.0, 110.0), "not_defined": (35.0, 130.0)}
 
 
 def _rf(lo: float, hi: float, decimals: int = 5) -> float:
@@ -108,8 +109,8 @@ def seed(count: int = SEED_COUNT) -> int:
     engine = create_engine(DATABASE_URL, echo=False)
 
     # Defer import so this script works without FastAPI context
-    from app.models.device_orm import Device  # noqa: PLC0415
     from app.db import Base  # noqa: PLC0415
+    from app.models.device_orm import Device  # noqa: PLC0415
 
     Base.metadata.create_all(engine)  # safety net (app lifespan also runs create_all)
 

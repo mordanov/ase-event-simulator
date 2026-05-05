@@ -5,6 +5,7 @@ One Session = one running simulation.
 The manager keeps a registry of active sessions and exposes
 start / stop / status operations.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -12,14 +13,12 @@ import logging
 import os
 import time
 from collections import defaultdict, deque
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 
+import httpx
 from sqlalchemy import func, select
 
-from app.generators.telemetry import GPS_BOUNDS, FIRMWARE_VERSIONS, TelemetryGenerator, _rf
-import httpx
-
+from app.generators.telemetry import GPS_BOUNDS, TelemetryGenerator, _rf
 from app.models.telemetry import (
     ActivityEvent,
     BatchPayload,
@@ -28,15 +27,19 @@ from app.models.telemetry import (
     EndpointStatus,
     RecommendationLog,
     RegistrationEvent,
-    ScenarioType,
     SendMode,
     SessionConfig,
     SessionStatus,
     TelemetryEvent,
-    TransportProtocol,
 )
 from app.services.runtime_mode import is_cloud_mode
-from app.transports.sender import AWSIoTMQTTTransport, BaseTransport, HTTPTransport, make_transport, build_registration_payload
+from app.transports.sender import (
+    AWSIoTMQTTTransport,
+    BaseTransport,
+    HTTPTransport,
+    build_registration_payload,
+    make_transport,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -51,8 +54,8 @@ class Session:
         self.config = config
         self.session_id = config.session_id
         self._running = False
-        self._task: Optional[asyncio.Task] = None
-        self._started_at: Optional[float] = None
+        self._task: asyncio.Task | None = None
+        self._started_at: float | None = None
 
         # Telemetry stats
         self._events_generated = 0
@@ -71,7 +74,7 @@ class Session:
 
         # Recommendation log
         self._rec_log: deque[RecommendationLog] = deque(maxlen=MAX_REC_LOG)
-        self._rec_client: Optional[httpx.AsyncClient] = None
+        self._rec_client: httpx.AsyncClient | None = None
 
         # Devices disabled via the rules engine — skip sending events for these
         self._disabled_device_ids: set[str] = set()
@@ -88,9 +91,7 @@ class Session:
 
         # Build transports (one per endpoint)
         self._transports: list[BaseTransport] = [
-            make_transport(ep)
-            for ep in config.endpoints
-            if ep.enabled
+            make_transport(ep) for ep in config.endpoints if ep.enabled
         ]
 
     # ── lifecycle ──────────────────────────────────────────────────────────
@@ -101,8 +102,12 @@ class Session:
         self._running = True
         self._started_at = time.monotonic()
         self._task = asyncio.create_task(self._run(), name=f"session-{self.session_id}")
-        logger.info("Session %s started (%d devices, mode=%s)",
-                    self.session_id, self._generator.device_count, self.config.send_mode)
+        logger.info(
+            "Session %s started (%d devices, mode=%s)",
+            self.session_id,
+            self._generator.device_count,
+            self.config.send_mode,
+        )
 
     async def stop(self):
         self._running = False
@@ -113,8 +118,13 @@ class Session:
             except asyncio.CancelledError:
                 pass
         await self._close_transports()
-        logger.info("Session %s stopped. Generated=%d Sent=%d Failed=%d",
-                    self.session_id, self._events_generated, self._events_sent, self._events_failed)
+        logger.info(
+            "Session %s stopped. Generated=%d Sent=%d Failed=%d",
+            self.session_id,
+            self._events_generated,
+            self._events_sent,
+            self._events_failed,
+        )
 
     @property
     def running(self) -> bool:
@@ -145,15 +155,20 @@ class Session:
         self._devices_pending = len(device_ids)
 
         def on_reg_event(device_id: str, status: str, message: str) -> None:
-            self._reg_log.append(RegistrationEvent(
-                device_id=device_id, status=status, message=message,
-            ))
+            self._reg_log.append(
+                RegistrationEvent(
+                    device_id=device_id,
+                    status=status,
+                    message=message,
+                )
+            )
             if status == "registered":
                 self._devices_registered += 1
                 self._devices_pending = max(0, self._devices_pending - 1)
 
         try:
             from app.services.registration_service import register_devices
+
             fingerprints = await register_devices(device_ids, on_event=on_reg_event)
             for d in self._generator.devices:
                 d["cert_fingerprint"] = fingerprints.get(d["device_id"], "")
@@ -176,15 +191,17 @@ class Session:
             return
         try:
             from sqlalchemy import select
+
             from app.db import async_session_factory
             from app.models.device_orm import Device
+
             device_ids = list(fingerprints.keys())
             async with async_session_factory() as db:
                 rows = (
-                    await db.execute(
-                        select(Device).where(Device.device_id.in_(device_ids))
-                    )
-                ).scalars().all()
+                    (await db.execute(select(Device).where(Device.device_id.in_(device_ids))))
+                    .scalars()
+                    .all()
+                )
             for d in rows:
                 fp = fingerprints.get(d.device_id, "")
                 if not (d.cert_pem and d.cert_key_pem):
@@ -225,39 +242,48 @@ class Session:
                 return_exceptions=True,
             )
             endpoint_responses = [
-                r if isinstance(r, dict) else {"name": "?", "url": "?", "status_code": None, "body": str(r)}
+                r
+                if isinstance(r, dict)
+                else {"name": "?", "url": "?", "status_code": None, "body": str(r)}
                 for r in responses
             ]
 
-            self._reg_log.append(RegistrationEvent(
-                device_id=d["device_id"],
-                status="registered",
-                message="Biometric registration event sent to endpoints",
-                height_cm=d.get("height_cm"),
-                weight_kg=d.get("weight_kg"),
-                gender=d.get("gender"),
-                birth_date=d.get("birth_date"),
-                request_payload=request_payload,
-                endpoint_responses=endpoint_responses,
-            ))
-            first_ok = next((r for r in endpoint_responses if r.get("status_code") and r["status_code"] < 400), None)
+            self._reg_log.append(
+                RegistrationEvent(
+                    device_id=d["device_id"],
+                    status="registered",
+                    message="Biometric registration event sent to endpoints",
+                    height_cm=d.get("height_cm"),
+                    weight_kg=d.get("weight_kg"),
+                    gender=d.get("gender"),
+                    birth_date=d.get("birth_date"),
+                    request_payload=request_payload,
+                    endpoint_responses=endpoint_responses,
+                )
+            )
+            first_ok = next(
+                (r for r in endpoint_responses if r.get("status_code") and r["status_code"] < 400),
+                None,
+            )
             reg_status = "registered" if first_ok else ("error" if endpoint_responses else "ok")
-            self._activity_log.append(ActivityEvent(
-                timestamp=datetime.now(timezone.utc).isoformat(),
-                event_type="registration",
-                device_id=d["device_id"],
-                status=reg_status,
-                data={
-                    "model": d.get("model"),
-                    "firmware_version": d.get("firmware"),
-                    "os": d.get("os"),
-                    "height_cm": d.get("height_cm"),
-                    "weight_kg": d.get("weight_kg"),
-                    "gender": d.get("gender"),
-                    "request": request_payload,
-                    "responses": endpoint_responses,
-                },
-            ))
+            self._activity_log.append(
+                ActivityEvent(
+                    timestamp=datetime.now(UTC).isoformat(),
+                    event_type="registration",
+                    device_id=d["device_id"],
+                    status=reg_status,
+                    data={
+                        "model": d.get("model"),
+                        "firmware_version": d.get("firmware"),
+                        "os": d.get("os"),
+                        "height_cm": d.get("height_cm"),
+                        "weight_kg": d.get("weight_kg"),
+                        "gender": d.get("gender"),
+                        "request": request_payload,
+                        "responses": endpoint_responses,
+                    },
+                )
+            )
 
     def _collect_credit_results(self) -> list[dict]:
         """Gather last_credit_results from all HTTP transports, deduplicated by device_id."""
@@ -275,7 +301,8 @@ class Session:
     async def _refresh_disabled_devices(self) -> None:
         """Poll /api/v1/rules/disabled-devices and update _disabled_device_ids."""
         from urllib.parse import urlparse as _up
-        rules_base: Optional[str] = None
+
+        rules_base: str | None = None
         for t in self._transports:
             if isinstance(t, HTTPTransport):
                 p = _up(t.endpoint.url)
@@ -300,7 +327,11 @@ class Session:
                         self._disabled_device_ids.add(did)
                         newly_disabled.append(did)
                 if newly_disabled:
-                    logger.info("disabled_devices_updated", count=len(self._disabled_device_ids), new=newly_disabled)
+                    logger.info(
+                        "disabled_devices_updated",
+                        count=len(self._disabled_device_ids),
+                        new=newly_disabled,
+                    )
         except Exception as exc:
             logger.debug("disabled_devices_refresh_failed: %s", exc)
 
@@ -312,7 +343,8 @@ class Session:
 
         # Derive the recommendation base URL from the first HTTP transport
         from urllib.parse import urlparse
-        rec_base: Optional[str] = None
+
+        rec_base: str | None = None
         for t in self._transports:
             if isinstance(t, HTTPTransport):
                 p = urlparse(t.endpoint.url)
@@ -336,64 +368,98 @@ class Session:
             rec_url = f"{rec_base}/api/v1/devices/{device_id}/recommendations"
             try:
                 resp = await self._rec_client.post(
-                    rec_url, content='{"min_confidence": 0.2}',
+                    rec_url,
+                    content='{"min_confidence": 0.2}',
                     headers={"Content-Type": "application/json", "X-API-Key": api_key},
                 )
                 if resp.status_code < 400:
                     body = resp.json()
                     balance_after = body.get("credits_remaining", balance_before)
-                    ts_rec = datetime.now(timezone.utc).isoformat()
-                    self._rec_log.append(RecommendationLog(
-                        timestamp=ts_rec,
-                        device_id=device_id,
-                        reward_tier=body.get("reward_tier", tier),
-                        balance_before=balance_before,
-                        balance_after=balance_after,
-                        credits_spent=balance_before - balance_after,
-                        request={"device_id": device_id, "min_confidence": 0.2},
-                        response={
-                            "recommendations": body.get("recommendations", []),
-                            "credits_remaining": balance_after,
-                            "reward_tier": body.get("reward_tier", tier),
-                            "providers_called": body.get("providers_called", 0),
-                            "providers_succeeded": body.get("providers_succeeded", 0),
-                            "duration_ms": body.get("duration_ms", 0),
-                            "trace_id": body.get("trace_id", ""),
-                        },
-                    ))
-                    self._activity_log.append(ActivityEvent(
-                        timestamp=ts_rec,
-                        event_type="recommendation",
-                        device_id=device_id,
-                        status="ok",
-                        data={
-                            "request": {"device_id": device_id, "min_confidence": 0.2},
-                            "response": {
+                    ts_rec = datetime.now(UTC).isoformat()
+                    self._rec_log.append(
+                        RecommendationLog(
+                            timestamp=ts_rec,
+                            device_id=device_id,
+                            reward_tier=body.get("reward_tier", tier),
+                            balance_before=balance_before,
+                            balance_after=balance_after,
+                            credits_spent=balance_before - balance_after,
+                            request={"device_id": device_id, "min_confidence": 0.2},
+                            response={
                                 "recommendations": body.get("recommendations", []),
                                 "credits_remaining": balance_after,
                                 "reward_tier": body.get("reward_tier", tier),
                                 "providers_called": body.get("providers_called", 0),
                                 "providers_succeeded": body.get("providers_succeeded", 0),
                                 "duration_ms": body.get("duration_ms", 0),
+                                "trace_id": body.get("trace_id", ""),
                             },
-                            "balance_before": balance_before,
-                            "balance_after": balance_after,
-                            "credits_spent": balance_before - balance_after,
-                        },
-                    ))
+                        )
+                    )
+                    self._activity_log.append(
+                        ActivityEvent(
+                            timestamp=ts_rec,
+                            event_type="recommendation",
+                            device_id=device_id,
+                            status="ok",
+                            data={
+                                "request": {"device_id": device_id, "min_confidence": 0.2},
+                                "response": {
+                                    "recommendations": body.get("recommendations", []),
+                                    "credits_remaining": balance_after,
+                                    "reward_tier": body.get("reward_tier", tier),
+                                    "providers_called": body.get("providers_called", 0),
+                                    "providers_succeeded": body.get("providers_succeeded", 0),
+                                    "duration_ms": body.get("duration_ms", 0),
+                                },
+                                "balance_before": balance_before,
+                                "balance_after": balance_after,
+                                "credits_spent": balance_before - balance_after,
+                            },
+                        )
+                    )
                 elif resp.status_code == 403:
                     self._disabled_device_ids.add(device_id)
-                    ts_rec = datetime.now(timezone.utc).isoformat()
-                    self._activity_log.append(ActivityEvent(
-                        timestamp=ts_rec,
-                        event_type="recommendation",
-                        device_id=device_id,
-                        status="disabled",
-                        data={"error": "DEVICE_DISABLED"},
-                    ))
+                    ts_rec = datetime.now(UTC).isoformat()
+                    self._activity_log.append(
+                        ActivityEvent(
+                            timestamp=ts_rec,
+                            event_type="recommendation",
+                            device_id=device_id,
+                            status="disabled",
+                            data={"error": "DEVICE_DISABLED"},
+                        )
+                    )
                 else:
-                    ts_rec = datetime.now(timezone.utc).isoformat()
-                    self._rec_log.append(RecommendationLog(
+                    ts_rec = datetime.now(UTC).isoformat()
+                    self._rec_log.append(
+                        RecommendationLog(
+                            timestamp=ts_rec,
+                            device_id=device_id,
+                            reward_tier=tier,
+                            balance_before=balance_before,
+                            balance_after=balance_before,
+                            credits_spent=0,
+                            request={"device_id": device_id, "min_confidence": 0.2},
+                            error=f"HTTP {resp.status_code}: {resp.text[:200]}",
+                        )
+                    )
+                    self._activity_log.append(
+                        ActivityEvent(
+                            timestamp=ts_rec,
+                            event_type="recommendation",
+                            device_id=device_id,
+                            status="error",
+                            data={
+                                "request": {"device_id": device_id, "min_confidence": 0.2},
+                                "error": f"HTTP {resp.status_code}: {resp.text[:200]}",
+                            },
+                        )
+                    )
+            except Exception as exc:
+                ts_rec = datetime.now(UTC).isoformat()
+                self._rec_log.append(
+                    RecommendationLog(
                         timestamp=ts_rec,
                         device_id=device_id,
                         reward_tier=tier,
@@ -401,40 +467,21 @@ class Session:
                         balance_after=balance_before,
                         credits_spent=0,
                         request={"device_id": device_id, "min_confidence": 0.2},
-                        error=f"HTTP {resp.status_code}: {resp.text[:200]}",
-                    ))
-                    self._activity_log.append(ActivityEvent(
+                        error=str(exc),
+                    )
+                )
+                self._activity_log.append(
+                    ActivityEvent(
                         timestamp=ts_rec,
                         event_type="recommendation",
                         device_id=device_id,
                         status="error",
                         data={
                             "request": {"device_id": device_id, "min_confidence": 0.2},
-                            "error": f"HTTP {resp.status_code}: {resp.text[:200]}",
+                            "error": str(exc)[:200],
                         },
-                    ))
-            except Exception as exc:
-                ts_rec = datetime.now(timezone.utc).isoformat()
-                self._rec_log.append(RecommendationLog(
-                    timestamp=ts_rec,
-                    device_id=device_id,
-                    reward_tier=tier,
-                    balance_before=balance_before,
-                    balance_after=balance_before,
-                    credits_spent=0,
-                    request={"device_id": device_id, "min_confidence": 0.2},
-                    error=str(exc),
-                ))
-                self._activity_log.append(ActivityEvent(
-                    timestamp=ts_rec,
-                    event_type="recommendation",
-                    device_id=device_id,
-                    status="error",
-                    data={
-                        "request": {"device_id": device_id, "min_confidence": 0.2},
-                        "error": str(exc)[:200],
-                    },
-                ))
+                    )
+                )
 
     async def _run_immediate(self):
         """Per interval: one event per device fanned out to every transport.
@@ -459,18 +506,20 @@ class Session:
                     t.last_credit_results.clear()
 
             # Log and skip disabled devices
-            _ts_dis = datetime.now(timezone.utc).isoformat()
+            _ts_dis = datetime.now(UTC).isoformat()
             active_indices = []
             for _i in range(device_count):
                 _did = self._generator.devices[_i]["device_id"]
                 if _did in self._disabled_device_ids:
-                    self._activity_log.append(ActivityEvent(
-                        timestamp=_ts_dis,
-                        event_type="disabled",
-                        device_id=_did,
-                        status="disabled",
-                        data={"reason": "Device is disabled — event skipped"},
-                    ))
+                    self._activity_log.append(
+                        ActivityEvent(
+                            timestamp=_ts_dis,
+                            event_type="disabled",
+                            device_id=_did,
+                            status="disabled",
+                            data={"reason": "Device is disabled — event skipped"},
+                        )
+                    )
                 else:
                     active_indices.append(_i)
 
@@ -497,7 +546,8 @@ class Session:
                     transport = self._transports[self._rr_index % len(self._transports)]
                     self._rr_index += 1
                     delivered = (
-                        event if event.protocol == transport.endpoint.protocol
+                        event
+                        if event.protocol == transport.endpoint.protocol
                         else event.model_copy(update={"protocol": transport.endpoint.protocol})
                     )
                     task_meta.append((event, transport))
@@ -507,7 +557,8 @@ class Session:
                 for event in base_events:
                     for transport in self._transports:
                         delivered = (
-                            event if event.protocol == transport.endpoint.protocol
+                            event
+                            if event.protocol == transport.endpoint.protocol
                             else event.model_copy(update={"protocol": transport.endpoint.protocol})
                         )
                         task_meta.append((event, transport))
@@ -515,13 +566,17 @@ class Session:
 
             results = await asyncio.gather(*tasks, return_exceptions=True)
             event_responses: dict[str, list] = defaultdict(list)
-            for (event, transport), r in zip(task_meta, results):
+            for (event, transport), r in zip(task_meta, results, strict=False):
                 if isinstance(r, Exception):
                     self._events_failed += 1
-                    event_responses[event.event_id].append({
-                        "name": transport.endpoint.name, "status_code": None,
-                        "body": None, "error": str(r)[:300],
-                    })
+                    event_responses[event.event_id].append(
+                        {
+                            "name": transport.endpoint.name,
+                            "status_code": None,
+                            "body": None,
+                            "error": str(r)[:300],
+                        }
+                    )
                 else:
                     if r.get("ok"):
                         self._events_sent += 1
@@ -532,35 +587,41 @@ class Session:
                     if isinstance(body, dict):
                         for _did in body.get("device_disabled_ids", []):
                             self._disabled_device_ids.add(_did)
-                    event_responses[event.event_id].append({
-                        "name": transport.endpoint.name,
-                        "status_code": r.get("status_code"),
-                        "body": body,
-                        "error": r.get("error"),
-                    })
+                    event_responses[event.event_id].append(
+                        {
+                            "name": transport.endpoint.name,
+                            "status_code": r.get("status_code"),
+                            "body": body,
+                            "error": r.get("error"),
+                        }
+                    )
 
             credit_results = self._collect_credit_results()
-            ts_ev = datetime.now(timezone.utc).isoformat()
+            ts_ev = datetime.now(UTC).isoformat()
             for event in base_events:
-                self._activity_log.append(ActivityEvent(
-                    timestamp=ts_ev,
-                    event_type=event.scenario.value,
-                    device_id=event.device_id,
-                    status="anomaly" if event.is_anomaly else "ok",
-                    data={
-                        "payload": event.model_dump(mode="json"),
-                        "endpoint_responses": event_responses.get(event.event_id, []),
-                    },
-                ))
+                self._activity_log.append(
+                    ActivityEvent(
+                        timestamp=ts_ev,
+                        event_type=event.scenario.value,
+                        device_id=event.device_id,
+                        status="anomaly" if event.is_anomaly else "ok",
+                        data={
+                            "payload": event.model_dump(mode="json"),
+                            "endpoint_responses": event_responses.get(event.event_id, []),
+                        },
+                    )
+                )
             for cr in credit_results:
                 if cr.get("activity_reward", 0) > 0:
-                    self._activity_log.append(ActivityEvent(
-                        timestamp=ts_ev,
-                        event_type="rewards",
-                        device_id=cr.get("device_id", ""),
-                        status="ok",
-                        data=cr,
-                    ))
+                    self._activity_log.append(
+                        ActivityEvent(
+                            timestamp=ts_ev,
+                            event_type="rewards",
+                            device_id=cr.get("device_id", ""),
+                            status="ok",
+                            data=cr,
+                        )
+                    )
             await self._maybe_recommend(credit_results)
             await asyncio.sleep(self.config.interval_seconds)
 
@@ -588,18 +649,20 @@ class Session:
                     t.last_credit_results.clear()
 
             # Log and skip disabled devices
-            _ts_dis = datetime.now(timezone.utc).isoformat()
+            _ts_dis = datetime.now(UTC).isoformat()
             active_indices = []
             for _i in range(device_count):
                 _did = self._generator.devices[_i]["device_id"]
                 if _did in self._disabled_device_ids:
-                    self._activity_log.append(ActivityEvent(
-                        timestamp=_ts_dis,
-                        event_type="disabled",
-                        device_id=_did,
-                        status="disabled",
-                        data={"reason": "Device is disabled — event skipped"},
-                    ))
+                    self._activity_log.append(
+                        ActivityEvent(
+                            timestamp=_ts_dis,
+                            event_type="disabled",
+                            device_id=_did,
+                            status="disabled",
+                            data={"reason": "Device is disabled — event skipped"},
+                        )
+                    )
                 else:
                     active_indices.append(_i)
 
@@ -628,7 +691,8 @@ class Session:
                     self._rr_index += 1
                     transport = self._transports[t_idx]
                     delivered = (
-                        event if event.protocol == transport.endpoint.protocol
+                        event
+                        if event.protocol == transport.endpoint.protocol
                         else event.model_copy(update={"protocol": transport.endpoint.protocol})
                     )
                     transport_events[t_idx].append(delivered)
@@ -645,7 +709,8 @@ class Session:
                 for transport in self._transports:
                     # Fan out: reuse same event_id/metrics, override protocol field
                     events = [
-                        e if e.protocol == transport.endpoint.protocol
+                        e
+                        if e.protocol == transport.endpoint.protocol
                         else e.model_copy(update={"protocol": transport.endpoint.protocol})
                         for e in base_events
                     ]
@@ -660,11 +725,15 @@ class Session:
                 return_exceptions=True,
             )
             event_responses: dict[str, list] = defaultdict(list)
-            for (transport, batch), result in zip(send_tasks, results):
+            for (transport, batch), result in zip(send_tasks, results, strict=False):
                 if isinstance(result, Exception):
                     self._events_failed += len(batch.events)
-                    r_entry = {"name": transport.endpoint.name, "status_code": None,
-                               "body": None, "error": str(result)[:300]}
+                    r_entry = {
+                        "name": transport.endpoint.name,
+                        "status_code": None,
+                        "body": None,
+                        "error": str(result)[:300],
+                    }
                 else:
                     ok = result.get("ok", False)
                     if ok:
@@ -687,27 +756,31 @@ class Session:
                     event_responses[event.event_id].append(r_entry)
 
             credit_results = self._collect_credit_results()
-            ts_ev = datetime.now(timezone.utc).isoformat()
+            ts_ev = datetime.now(UTC).isoformat()
             for event in base_events:
-                self._activity_log.append(ActivityEvent(
-                    timestamp=ts_ev,
-                    event_type=event.scenario.value,
-                    device_id=event.device_id,
-                    status="anomaly" if event.is_anomaly else "ok",
-                    data={
-                        "payload": event.model_dump(mode="json"),
-                        "endpoint_responses": event_responses.get(event.event_id, []),
-                    },
-                ))
+                self._activity_log.append(
+                    ActivityEvent(
+                        timestamp=ts_ev,
+                        event_type=event.scenario.value,
+                        device_id=event.device_id,
+                        status="anomaly" if event.is_anomaly else "ok",
+                        data={
+                            "payload": event.model_dump(mode="json"),
+                            "endpoint_responses": event_responses.get(event.event_id, []),
+                        },
+                    )
+                )
             for cr in credit_results:
                 if cr.get("activity_reward", 0) > 0:
-                    self._activity_log.append(ActivityEvent(
-                        timestamp=ts_ev,
-                        event_type="rewards",
-                        device_id=cr.get("device_id", ""),
-                        status="ok",
-                        data=cr,
-                    ))
+                    self._activity_log.append(
+                        ActivityEvent(
+                            timestamp=ts_ev,
+                            event_type="rewards",
+                            device_id=cr.get("device_id", ""),
+                            status="ok",
+                            data=cr,
+                        )
+                    )
             await self._maybe_recommend(credit_results)
             await asyncio.sleep(self.config.interval_seconds)
 
@@ -728,7 +801,7 @@ class Session:
             events_failed=self._events_failed,
             batches_sent=self._batches_sent,
             anomalies_generated=self._anomalies,
-            started_at=datetime.now(timezone.utc).isoformat() if self._started_at else None,
+            started_at=datetime.now(UTC).isoformat() if self._started_at else None,
             elapsed_seconds=elapsed,
             endpoints=endpoint_statuses,
             recent_events=list(self._recent)[-20:],
@@ -757,6 +830,7 @@ class Session:
 
 # ─── DB device loader ─────────────────────────────────────────────────────────
 
+
 async def _load_devices_from_db(device_profiles: list) -> list[dict] | None:
     """
     Query the devices table and return a flat list of device dicts compatible
@@ -779,20 +853,26 @@ async def _load_devices_from_db(device_profiles: list) -> list[dict] | None:
                 # Cycle rows if fewer DB devices than requested
                 for i in range(profile.count):
                     d = rows[i % len(rows)]
-                    devices.append({
-                        "device_id": d.device_id,
-                        "user_id": d.user_id,
-                        "device_type": DeviceType(d.device_type),
-                        "model": d.model,
-                        "os": d.os,
-                        "firmware": d.firmware_version,
-                        "gps_lat": d.gps_lat if d.gps_lat is not None else _rf(*GPS_BOUNDS["lat"], 5),
-                        "gps_lon": d.gps_lon if d.gps_lon is not None else _rf(*GPS_BOUNDS["lon"], 5),
-                        "height_cm": d.height_cm,
-                        "weight_kg": d.weight_kg,
-                        "gender": d.gender,
-                        "birth_date": d.birth_date,
-                    })
+                    devices.append(
+                        {
+                            "device_id": d.device_id,
+                            "user_id": d.user_id,
+                            "device_type": DeviceType(d.device_type),
+                            "model": d.model,
+                            "os": d.os,
+                            "firmware": d.firmware_version,
+                            "gps_lat": d.gps_lat
+                            if d.gps_lat is not None
+                            else _rf(*GPS_BOUNDS["lat"], 5),  # noqa: E501
+                            "gps_lon": d.gps_lon
+                            if d.gps_lon is not None
+                            else _rf(*GPS_BOUNDS["lon"], 5),  # noqa: E501
+                            "height_cm": d.height_cm,
+                            "weight_kg": d.weight_kg,
+                            "gender": d.gender,
+                            "birth_date": d.birth_date,
+                        }
+                    )
         return devices if devices else None
     except Exception as exc:
         logger.warning("DB unavailable — falling back to ephemeral device IDs: %s", exc)
@@ -800,6 +880,7 @@ async def _load_devices_from_db(device_profiles: list) -> list[dict] | None:
 
 
 # ─── Manager (singleton) ──────────────────────────────────────────────────────
+
 
 class SessionManager:
     def __init__(self):
@@ -819,7 +900,7 @@ class SessionManager:
         session.start()
         return config.session_id
 
-    async def stop_session(self, session_id: str) -> Optional[SessionStatus]:
+    async def stop_session(self, session_id: str) -> SessionStatus | None:
         session = self._sessions.get(session_id)
         if not session:
             return None
@@ -827,7 +908,7 @@ class SessionManager:
         status = session.get_status()
         return status
 
-    def get_status(self, session_id: str) -> Optional[SessionStatus]:
+    def get_status(self, session_id: str) -> SessionStatus | None:
         session = self._sessions.get(session_id)
         if not session:
             return None

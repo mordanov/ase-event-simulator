@@ -3,17 +3,17 @@ import { api } from '../api/client';
 import type { DeviceStats, DeviceType } from '../types';
 
 const DEVICE_TYPES: { value: DeviceType; label: string }[] = [
-  { value: 'smartwatch',      label: 'Smartwatch' },
+  { value: 'smartwatch', label: 'Smartwatch' },
   { value: 'fitness_tracker', label: 'Fitness Tracker' },
-  { value: 'smartphone',      label: 'Smartphone' },
-  { value: 'laptop',          label: 'Laptop' },
+  { value: 'smartphone', label: 'Smartphone' },
+  { value: 'laptop', label: 'Laptop' },
 ];
 
 const TYPE_COLORS: Record<string, string> = {
-  smartwatch:      '#38bdf8',
+  smartwatch: '#38bdf8',
   fitness_tracker: '#a78bfa',
-  smartphone:      '#34d399',
-  laptop:          '#fb923c',
+  smartphone: '#34d399',
+  laptop: '#fb923c',
 };
 
 export function DeviceRegistry() {
@@ -59,7 +59,9 @@ export function DeviceRegistry() {
     <div style={styles.card}>
       <div style={styles.header}>
         <span style={styles.title}>Device Registry</span>
-        <button onClick={fetchStats} style={styles.refreshBtn} title="Refresh">↻</button>
+        <button onClick={fetchStats} style={styles.refreshBtn} title="Refresh">
+          ↻
+        </button>
       </div>
 
       {dbError ? (
@@ -87,11 +89,13 @@ export function DeviceRegistry() {
       <div style={styles.formRow}>
         <select
           value={seedType}
-          onChange={e => setSeedType(e.target.value as DeviceType)}
+          onChange={(e) => setSeedType(e.target.value as DeviceType)}
           style={styles.select}
         >
           {DEVICE_TYPES.map(({ value, label }) => (
-            <option key={value} value={value}>{label}</option>
+            <option key={value} value={value}>
+              {label}
+            </option>
           ))}
         </select>
 
@@ -100,7 +104,7 @@ export function DeviceRegistry() {
           min={1}
           max={1000}
           value={seedCount}
-          onChange={e => setSeedCount(Math.max(1, Math.min(1000, parseInt(e.target.value) || 1)))}
+          onChange={(e) => setSeedCount(Math.max(1, Math.min(1000, parseInt(e.target.value) || 1)))}
           style={styles.countInput}
         />
 

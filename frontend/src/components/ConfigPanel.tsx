@@ -1,7 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import type {
-  SessionConfig, DeviceProfile, EndpointConfig,
-  TransportProtocol, MetaOption, DeviceType, SimulatorDefaults, EndpointMode,
+  SessionConfig,
+  DeviceProfile,
+  EndpointConfig,
+  TransportProtocol,
+  MetaOption,
+  DeviceType,
+  SimulatorDefaults,
+  EndpointMode,
 } from '../types';
 
 const DEFAULT_CONFIG: SessionConfig = {
@@ -41,25 +47,32 @@ const PROTOCOL_COLORS: Record<TransportProtocol, string> = {
 const UNIMPLEMENTED_PROTOCOLS: TransportProtocol[] = ['grpc', 'websocket'];
 
 export function ConfigPanel({
-  deviceTypes, scenarios, protocols, sendModes, defaults,
-  onStart, onStop, onStopAll, isRunning, loading,
+  deviceTypes,
+  scenarios,
+  protocols,
+  sendModes,
+  defaults,
+  onStart,
+  onStop,
+  onStopAll,
+  isRunning,
+  loading,
 }: Props) {
   const [cfg, setCfg] = useState<SessionConfig>(DEFAULT_CONFIG);
   const [validationError, setValidationError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!defaults) return;
-    setCfg(prev => ({
+    setCfg((prev) => ({
       ...prev,
-      batch_size:       defaults.batch_size,
+      batch_size: defaults.batch_size,
       interval_seconds: defaults.interval_seconds,
-      anomaly_rate:     defaults.anomaly_rate,
-      endpoints:        defaults.endpoints.length ? defaults.endpoints : prev.endpoints,
+      anomaly_rate: defaults.anomaly_rate,
+      endpoints: defaults.endpoints.length ? defaults.endpoints : prev.endpoints,
     }));
   }, [defaults]);
 
-  const updateCfg = (patch: Partial<SessionConfig>) =>
-    setCfg(prev => ({ ...prev, ...patch }));
+  const updateCfg = (patch: Partial<SessionConfig>) => setCfg((prev) => ({ ...prev, ...patch }));
 
   // ── Device rows ───────────────────────────────────────────────────────
   const addDevice = () =>
@@ -70,13 +83,16 @@ export function ConfigPanel({
 
   const updateDevice = (i: number, patch: Partial<DeviceProfile>) =>
     updateCfg({
-      devices: cfg.devices.map((d, idx) => idx === i ? { ...d, ...patch } : d),
+      devices: cfg.devices.map((d, idx) => (idx === i ? { ...d, ...patch } : d)),
     });
 
   // ── Endpoint rows ─────────────────────────────────────────────────────
   const addEndpoint = () =>
     updateCfg({
-      endpoints: [...cfg.endpoints, { name: '', url: '', protocol: 'http', enabled: true, headers: {} }],
+      endpoints: [
+        ...cfg.endpoints,
+        { name: '', url: '', protocol: 'http', enabled: true, headers: {} },
+      ],
     });
 
   const removeEndpoint = (i: number) =>
@@ -84,14 +100,14 @@ export function ConfigPanel({
 
   const updateEndpoint = (i: number, patch: Partial<EndpointConfig>) =>
     updateCfg({
-      endpoints: cfg.endpoints.map((e, idx) => idx === i ? { ...e, ...patch } : e),
+      endpoints: cfg.endpoints.map((e, idx) => (idx === i ? { ...e, ...patch } : e)),
     });
 
   // HTTP endpoints are always active regardless of the enabled checkbox state.
   const effectiveEnabled = (e: EndpointConfig) => e.protocol === 'http' || e.enabled;
 
-  const hasUnimplementedEndpoint = cfg.endpoints.some(e =>
-    effectiveEnabled(e) && UNIMPLEMENTED_PROTOCOLS.includes(e.protocol),
+  const hasUnimplementedEndpoint = cfg.endpoints.some(
+    (e) => effectiveEnabled(e) && UNIMPLEMENTED_PROTOCOLS.includes(e.protocol),
   );
 
   const handleStart = () => {
@@ -103,7 +119,7 @@ export function ConfigPanel({
     setValidationError(null);
     const config: SessionConfig = {
       ...cfg,
-      protocols: [...new Set(enabledEndpoints.map(e => e.protocol))],
+      protocols: [...new Set(enabledEndpoints.map((e) => e.protocol))],
     };
     onStart(config);
   };
@@ -114,7 +130,9 @@ export function ConfigPanel({
     <div style={styles.panel}>
       <div style={styles.header}>
         <span style={styles.headerTitle}>⚙ Session Configuration</span>
-        <span style={styles.deviceBadge}>{totalDevices} virtual device{totalDevices !== 1 ? 's' : ''}</span>
+        <span style={styles.deviceBadge}>
+          {totalDevices} virtual device{totalDevices !== 1 ? 's' : ''}
+        </span>
       </div>
 
       {/* ── Devices ── */}
@@ -126,32 +144,44 @@ export function ConfigPanel({
               <select
                 style={styles.select}
                 value={d.device_type}
-                onChange={e => updateDevice(i, { device_type: e.target.value as DeviceType })}
+                onChange={(e) => updateDevice(i, { device_type: e.target.value as DeviceType })}
               >
-                {deviceTypes.map(dt => (
-                  <option key={dt.value} value={dt.value}>{dt.label}</option>
+                {deviceTypes.map((dt) => (
+                  <option key={dt.value} value={dt.value}>
+                    {dt.label}
+                  </option>
                 ))}
               </select>
             </div>
             <div style={styles.countWrap}>
               <label style={styles.miniLabel}>Count</label>
               <input
-                type="number" min={1} max={200}
+                type="number"
+                min={1}
+                max={200}
                 style={{ ...styles.input, width: 70 }}
                 value={d.count}
-                onChange={e => updateDevice(i, { count: Math.max(1, +e.target.value) })}
+                onChange={(e) => updateDevice(i, { count: Math.max(1, +e.target.value) })}
               />
             </div>
-            <button style={{ ...styles.iconBtn, marginLeft: 'auto' }} onClick={() => removeDevice(i)} title="Remove">✕</button>
+            <button
+              style={{ ...styles.iconBtn, marginLeft: 'auto' }}
+              onClick={() => removeDevice(i)}
+              title="Remove"
+            >
+              ✕
+            </button>
           </div>
         ))}
-        <button style={styles.addBtn} onClick={addDevice}>+ Add Device Type</button>
+        <button style={styles.addBtn} onClick={addDevice}>
+          + Add Device Type
+        </button>
       </Section>
 
       {/* ── Scenario ── */}
       <Section label="Scenario">
         <div style={styles.scenarioGrid}>
-          {scenarios.map(s => (
+          {scenarios.map((s) => (
             <button
               key={s.value}
               style={{
@@ -171,7 +201,7 @@ export function ConfigPanel({
       {/* ── Send mode ── */}
       <Section label="Send Mode">
         <div style={styles.row}>
-          {sendModes.map(m => (
+          {sendModes.map((m) => (
             <button
               key={m.value}
               style={{
@@ -189,22 +219,28 @@ export function ConfigPanel({
           {cfg.send_mode === 'batch' && (
             <LabeledInput
               label="Batch size"
-              type="number" min={1} max={1000}
+              type="number"
+              min={1}
+              max={1000}
               value={cfg.batch_size}
-              onChange={v => updateCfg({ batch_size: +v })}
+              onChange={(v) => updateCfg({ batch_size: +v })}
             />
           )}
           <LabeledInput
             label="Interval (s)"
-            type="number" min={0.5} max={300} step={0.5}
+            type="number"
+            min={0.5}
+            max={300}
+            step={0.5}
             value={cfg.interval_seconds}
-            onChange={v => updateCfg({ interval_seconds: +v })}
+            onChange={(v) => updateCfg({ interval_seconds: +v })}
           />
           <LabeledInput
             label="Total events (blank=∞)"
-            type="number" min={1}
+            type="number"
+            min={1}
             value={cfg.total_events ?? ''}
-            onChange={v => updateCfg({ total_events: v === '' ? null : +v })}
+            onChange={(v) => updateCfg({ total_events: v === '' ? null : +v })}
           />
         </div>
         <div style={{ marginTop: 8 }}>
@@ -212,22 +248,25 @@ export function ConfigPanel({
             Anomaly rate: <strong>{Math.round(cfg.anomaly_rate * 100)}%</strong>
           </label>
           <input
-            type="range" min={0} max={1} step={0.01}
+            type="range"
+            min={0}
+            max={1}
+            step={0.01}
             style={styles.slider}
             value={cfg.anomaly_rate}
-            onChange={e => updateCfg({ anomaly_rate: +e.target.value })}
+            onChange={(e) => updateCfg({ anomaly_rate: +e.target.value })}
           />
         </div>
         <div style={{ marginTop: 8 }}>
-          <label style={styles.miniLabel}>
-            Recommendation handicap (credits)
-          </label>
+          <label style={styles.miniLabel}>Recommendation handicap (credits)</label>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
             <input
-              type="number" min={0} step={1}
+              type="number"
+              min={0}
+              step={1}
               style={{ ...styles.input, width: 100 }}
               value={cfg.recommendation_handicap}
-              onChange={e => updateCfg({ recommendation_handicap: Math.max(0, +e.target.value) })}
+              onChange={(e) => updateCfg({ recommendation_handicap: Math.max(0, +e.target.value) })}
             />
             <span style={{ fontSize: 10, color: '#475569' }}>
               {cfg.recommendation_handicap === 0
@@ -247,12 +286,12 @@ export function ConfigPanel({
                 placeholder="Name"
                 style={{ ...styles.input, flex: 1 }}
                 value={ep.name}
-                onChange={e => updateEndpoint(i, { name: e.target.value })}
+                onChange={(e) => updateEndpoint(i, { name: e.target.value })}
               />
               <select
                 style={{ ...styles.select, width: 120 }}
                 value={ep.protocol}
-                onChange={e => {
+                onChange={(e) => {
                   const proto = e.target.value as TransportProtocol;
                   updateEndpoint(i, {
                     protocol: proto,
@@ -260,8 +299,10 @@ export function ConfigPanel({
                   });
                 }}
               >
-                {protocols.map(p => (
-                  <option key={p.value} value={p.value}>{p.label}</option>
+                {protocols.map((p) => (
+                  <option key={p.value} value={p.value}>
+                    {p.label}
+                  </option>
                 ))}
               </select>
               <div
@@ -270,26 +311,30 @@ export function ConfigPanel({
                   background: PROTOCOL_COLORS[ep.protocol],
                 }}
               />
-              <button style={styles.iconBtn} onClick={() => removeEndpoint(i)}>✕</button>
+              <button style={styles.iconBtn} onClick={() => removeEndpoint(i)}>
+                ✕
+              </button>
             </div>
             {UNIMPLEMENTED_PROTOCOLS.includes(ep.protocol) && (
-              <div style={styles.endpointProtocolError}>
-                This protocol is not implemented yet
-              </div>
+              <div style={styles.endpointProtocolError}>This protocol is not implemented yet</div>
             )}
             <div style={styles.row}>
               <input
-                placeholder={ep.protocol === 'mqtt' ? 'mqtt://host:1883/topic' : 'https://api.example.com/ingest'}
+                placeholder={
+                  ep.protocol === 'mqtt'
+                    ? 'mqtt://host:1883/topic'
+                    : 'https://api.example.com/ingest'
+                }
                 style={{ ...styles.input, flex: 1 }}
                 value={ep.url}
-                onChange={e => updateEndpoint(i, { url: e.target.value })}
+                onChange={(e) => updateEndpoint(i, { url: e.target.value })}
               />
               <label style={{ ...styles.toggleLabel, opacity: ep.protocol === 'http' ? 0.5 : 1 }}>
                 <input
                   type="checkbox"
                   checked={ep.protocol === 'http' ? true : ep.enabled}
                   disabled={ep.protocol === 'http'}
-                  onChange={e => updateEndpoint(i, { enabled: e.target.checked })}
+                  onChange={(e) => updateEndpoint(i, { enabled: e.target.checked })}
                 />
                 <span style={{ marginLeft: 4 }}>
                   {ep.protocol === 'http' ? 'Always enabled' : 'Enabled'}
@@ -299,13 +344,13 @@ export function ConfigPanel({
           </div>
         ))}
 
-        {cfg.endpoints.filter(e => effectiveEnabled(e) && e.protocol === 'http').length > 1 && (
+        {cfg.endpoints.filter((e) => effectiveEnabled(e) && e.protocol === 'http').length > 1 && (
           <div style={styles.endpointModeRow}>
             <span style={styles.endpointModeLabel}>HTTP multi-endpoint mode</span>
             <select
               style={styles.select}
               value={cfg.endpoint_mode}
-              onChange={e => updateCfg({ endpoint_mode: e.target.value as EndpointMode })}
+              onChange={(e) => updateCfg({ endpoint_mode: e.target.value as EndpointMode })}
             >
               <option value="fanout">Broadcast — same data to all endpoints</option>
               <option value="round_robin">Round-robin — distribute events evenly</option>
@@ -313,19 +358,24 @@ export function ConfigPanel({
           </div>
         )}
 
-        <button style={styles.addBtn} onClick={addEndpoint}>+ Add Endpoint</button>
+        <button style={styles.addBtn} onClick={addEndpoint}>
+          + Add Endpoint
+        </button>
       </Section>
 
       {/* ── Controls ── */}
-      {validationError && (
-        <div style={styles.validationError}>{validationError}</div>
-      )}
+      {validationError && <div style={styles.validationError}>{validationError}</div>}
       <div style={styles.controls}>
         {!isRunning ? (
           <button
             style={{ ...styles.ctrlBtn, ...styles.startBtn }}
             onClick={handleStart}
-            disabled={loading || cfg.devices.length === 0 || cfg.endpoints.filter(effectiveEnabled).length === 0 || hasUnimplementedEndpoint}
+            disabled={
+              loading ||
+              cfg.devices.length === 0 ||
+              cfg.endpoints.filter(effectiveEnabled).length === 0 ||
+              hasUnimplementedEndpoint
+            }
           >
             {loading ? '⏳ Starting…' : '▶ Start Simulation'}
           </button>
@@ -358,15 +408,23 @@ function Section({ label, children }: { label: string; children: React.ReactNode
 }
 
 function LabeledInput({
-  label, value, onChange, ...rest
-}: { label: string; value: any; onChange: (v: string) => void; [k: string]: any }) {
+  label,
+  value,
+  onChange,
+  ...rest
+}: {
+  label: string;
+  value: any;
+  onChange: (v: string) => void;
+  [k: string]: any;
+}) {
   return (
     <div style={styles.labeledInput}>
       <label style={styles.miniLabel}>{label}</label>
       <input
         style={{ ...styles.input, width: 100 }}
         value={value}
-        onChange={e => onChange(e.target.value)}
+        onChange={(e) => onChange(e.target.value)}
         {...rest}
       />
     </div>
@@ -374,7 +432,11 @@ function LabeledInput({
 }
 
 const SCENARIO_ICONS: Record<string, string> = {
-  workout: '🏃', sleep: '😴', rest: '🧘', emergency: '🚨', random: '🎲',
+  workout: '🏃',
+  sleep: '😴',
+  rest: '🧘',
+  emergency: '🚨',
+  random: '🎲',
 };
 
 // ── Styles ────────────────────────────────────────────────────────────────────
@@ -521,24 +583,42 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 6,
   },
   protocolDot: {
-    width: 10, height: 10, borderRadius: '50%', flexShrink: 0,
+    width: 10,
+    height: 10,
+    borderRadius: '50%',
+    flexShrink: 0,
   },
   toggleLabel: {
-    display: 'flex', alignItems: 'center', fontSize: 12,
-    color: '#94a3b8', cursor: 'pointer', whiteSpace: 'nowrap',
+    display: 'flex',
+    alignItems: 'center',
+    fontSize: 12,
+    color: '#94a3b8',
+    cursor: 'pointer',
+    whiteSpace: 'nowrap',
   },
   controls: {
-    display: 'flex', gap: 8, marginTop: 8,
+    display: 'flex',
+    gap: 8,
+    marginTop: 8,
   },
   ctrlBtn: {
-    flex: 1, padding: '10px 0', borderRadius: 8, border: 'none',
-    cursor: 'pointer', fontWeight: 700, fontSize: 13, letterSpacing: '0.03em',
+    flex: 1,
+    padding: '10px 0',
+    borderRadius: 8,
+    border: 'none',
+    cursor: 'pointer',
+    fontWeight: 700,
+    fontSize: 13,
+    letterSpacing: '0.03em',
   },
   startBtn: { background: '#4ade80', color: '#0a0e1a' },
   stopBtn: { background: '#f87171', color: '#fff' },
   stopAllBtn: {
-    flex: 0.4, background: '#1a1f2e', color: '#64748b',
-    border: '1px solid #2a3040', fontSize: 12,
+    flex: 0.4,
+    background: '#1a1f2e',
+    color: '#64748b',
+    border: '1px solid #2a3040',
+    fontSize: 12,
   },
   validationError: {
     background: '#2d1515',
@@ -559,11 +639,18 @@ const styles: Record<string, React.CSSProperties> = {
   },
   countWrap: { display: 'flex', flexDirection: 'column', gap: 2 },
   endpointModeRow: {
-    display: 'flex', flexDirection: 'column' as const, gap: 6,
-    marginBottom: 8, marginTop: 2,
+    display: 'flex',
+    flexDirection: 'column' as const,
+    gap: 6,
+    marginBottom: 8,
+    marginTop: 2,
   },
   endpointModeLabel: {
-    fontSize: 11, color: '#475569', whiteSpace: 'nowrap',
-    fontWeight: 600, textTransform: 'uppercase' as const, letterSpacing: '0.08em',
+    fontSize: 11,
+    color: '#475569',
+    whiteSpace: 'nowrap',
+    fontWeight: 600,
+    textTransform: 'uppercase' as const,
+    letterSpacing: '0.08em',
   },
 };

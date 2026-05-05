@@ -62,7 +62,12 @@ export interface TelemetryEvent {
   heart_rate?: { bpm: number; hrv_ms?: number };
   steps?: { count: number; distance_m: number; calories_kcal: number };
   spo2?: { percentage: number };
-  sleep?: { duration_minutes: number; deep_sleep_minutes: number; rem_sleep_minutes: number; sleep_score: number };
+  sleep?: {
+    duration_minutes: number;
+    deep_sleep_minutes: number;
+    rem_sleep_minutes: number;
+    sleep_score: number;
+  };
   blood_pressure?: { systolic_mmhg: number; diastolic_mmhg: number };
   temperature?: { celsius: number };
   gps?: { latitude: number; longitude: number; altitude_m: number; accuracy_m: number };

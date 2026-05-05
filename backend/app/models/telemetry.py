@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
-from typing import Optional
 
 from pydantic import BaseModel, Field
 
-
 # ─── Enums ────────────────────────────────────────────────────────────────────
+
 
 class DeviceType(str, Enum):
     SMARTWATCH = "smartwatch"
@@ -39,15 +38,16 @@ class SendMode(str, Enum):
 
 
 class EndpointMode(str, Enum):
-    FANOUT = "fanout"          # same event to every endpoint (dedup by event_id)
+    FANOUT = "fanout"  # same event to every endpoint (dedup by event_id)
     ROUND_ROBIN = "round_robin"  # distribute events evenly across endpoints
 
 
 # ─── Metrics per device capability ────────────────────────────────────────────
 
+
 class HeartRateMetrics(BaseModel):
     bpm: int
-    hrv_ms: Optional[float] = None  # Heart Rate Variability
+    hrv_ms: float | None = None  # Heart Rate Variability
 
 
 class StepsMetrics(BaseModel):
@@ -93,30 +93,30 @@ class HydrationMetrics(BaseModel):
 
 # ─── Core telemetry event ─────────────────────────────────────────────────────
 
+
 class RegistrationEvent(BaseModel):
     """Emitted during the JITR registration phase (not telemetry)."""
+
     event_type: str = "registration"
     device_id: str
-    status: str   # pending | rejected | registered
+    status: str  # pending | rejected | registered
     message: str
-    timestamp: str = Field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
-    )
+    timestamp: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
     # Device profile — required by POST /api/v1/devices on the ingestion pipeline.
-    device_type: Optional[str] = None
-    model: Optional[str] = None
-    firmware_version: Optional[str] = None
-    os: Optional[str] = None
-    user_id: Optional[str] = None
+    device_type: str | None = None
+    model: str | None = None
+    firmware_version: str | None = None
+    os: str | None = None
+    user_id: str | None = None
     # User biometrics — included so downstream services (e.g. recommendation
     # aggregator) receive the profile data needed to call health-tip providers.
-    height_cm: Optional[float] = None
-    weight_kg: Optional[float] = None
-    gender: Optional[str] = None
-    birth_date: Optional[str] = None  # YYYY-MM-DD
+    height_cm: float | None = None
+    weight_kg: float | None = None
+    gender: str | None = None
+    birth_date: str | None = None  # YYYY-MM-DD
     # Request/response inspection — populated after the event is sent to endpoints.
-    request_payload: Optional[dict] = None
-    endpoint_responses: Optional[list[dict]] = None  # [{"name", "url", "status_code", "body"}]
+    request_payload: dict | None = None
+    endpoint_responses: list[dict] | None = None  # [{"name", "url", "status_code", "body"}]
 
 
 class TelemetryEvent(BaseModel):
@@ -124,38 +124,35 @@ class TelemetryEvent(BaseModel):
     device_id: str
     device_type: DeviceType
     user_id: str
-    timestamp: str = Field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
-    )
+    timestamp: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
     scenario: ScenarioType
     is_anomaly: bool = False
     protocol: TransportProtocol
-    cert_fingerprint: Optional[str] = None  # SHA-256 of device X.509 cert
+    cert_fingerprint: str | None = None  # SHA-256 of device X.509 cert
 
     # Metrics (device-type-dependent)
-    heart_rate: Optional[HeartRateMetrics] = None
-    steps: Optional[StepsMetrics] = None
-    spo2: Optional[SpO2Metrics] = None
-    sleep: Optional[SleepMetrics] = None
-    blood_pressure: Optional[BloodPressureMetrics] = None
-    temperature: Optional[TemperatureMetrics] = None
-    gps: Optional[GPSMetrics] = None
-    stress: Optional[StressMetrics] = None
-    hydration: Optional[HydrationMetrics] = None
-    battery_pct: Optional[int] = None
+    heart_rate: HeartRateMetrics | None = None
+    steps: StepsMetrics | None = None
+    spo2: SpO2Metrics | None = None
+    sleep: SleepMetrics | None = None
+    blood_pressure: BloodPressureMetrics | None = None
+    temperature: TemperatureMetrics | None = None
+    gps: GPSMetrics | None = None
+    stress: StressMetrics | None = None
+    hydration: HydrationMetrics | None = None
+    battery_pct: int | None = None
     firmware_version: str = "1.0.0"
 
 
 class BatchPayload(BaseModel):
     batch_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    sent_at: str = Field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
-    )
+    sent_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
     event_count: int
     events: list[TelemetryEvent]
 
 
 # ─── Session / config models ──────────────────────────────────────────────────
+
 
 class EndpointConfig(BaseModel):
     name: str
@@ -176,10 +173,10 @@ class SessionConfig(BaseModel):
     scenario: ScenarioType
     send_mode: SendMode
     endpoint_mode: EndpointMode = EndpointMode.FANOUT
-    batch_size: int = 10          # events per batch
+    batch_size: int = 10  # events per batch
     interval_seconds: float = 5.0
-    anomaly_rate: float = 0.1     # 0.0 – 1.0
-    total_events: Optional[int] = None  # None = run until stopped
+    anomaly_rate: float = 0.1  # 0.0 – 1.0
+    total_events: int | None = None  # None = run until stopped
     endpoints: list[EndpointConfig]
     protocols: list[TransportProtocol]
     recommendation_handicap: int = 500  # call recommendations when balance >= this (0 = disabled)
@@ -187,10 +184,11 @@ class SessionConfig(BaseModel):
 
 # ─── Runtime status ───────────────────────────────────────────────────────────
 
+
 class EndpointError(BaseModel):
     timestamp: str
     message: str
-    status_code: Optional[int] = None
+    status_code: int | None = None
 
 
 class EndpointStatus(BaseModel):
@@ -199,18 +197,21 @@ class EndpointStatus(BaseModel):
     protocol: TransportProtocol
     success_count: int = 0
     error_count: int = 0
-    last_status_code: Optional[int] = None
-    last_error: Optional[str] = None
+    last_status_code: int | None = None
+    last_error: str | None = None
     avg_latency_ms: float = 0.0
     recent_errors: list[EndpointError] = Field(default_factory=list)
 
 
 class ActivityEvent(BaseModel):
     """Unified log entry for every backend call made during a session."""
+
     timestamp: str
-    event_type: str   # workout|sleep|rest|emergency|random|registration|authorisation|rewards|recommendation
+    event_type: (
+        str  # workout|sleep|rest|emergency|random|registration|authorisation|rewards|recommendation
+    )
     device_id: str
-    status: str       # ok|error|anomaly|registered|rejected|pending
+    status: str  # ok|error|anomaly|registered|rejected|pending
     data: dict = Field(default_factory=dict)
 
 
@@ -222,8 +223,8 @@ class RecommendationLog(BaseModel):
     balance_after: int
     credits_spent: int
     request: dict
-    response: Optional[dict] = None
-    error: Optional[str] = None
+    response: dict | None = None
+    error: str | None = None
 
 
 class SessionStatus(BaseModel):
@@ -234,7 +235,7 @@ class SessionStatus(BaseModel):
     events_failed: int = 0
     batches_sent: int = 0
     anomalies_generated: int = 0
-    started_at: Optional[str] = None
+    started_at: str | None = None
     elapsed_seconds: float = 0.0
     endpoints: list[EndpointStatus] = Field(default_factory=list)
     recent_events: list[TelemetryEvent] = Field(default_factory=list)
@@ -249,6 +250,7 @@ class SessionStatus(BaseModel):
 
 
 # ─── API request/response shapes ─────────────────────────────────────────────
+
 
 class StartSessionRequest(BaseModel):
     config: SessionConfig
@@ -267,14 +269,15 @@ class StopSessionResponse(BaseModel):
 
 # ─── Device registry ──────────────────────────────────────────────────────────
 
+
 class DeviceRecord(BaseModel):
     id: int
     device_id: str
     device_type: DeviceType
     user_id: str
     firmware_version: str
-    gps_lat: Optional[float] = None
-    gps_lon: Optional[float] = None
+    gps_lat: float | None = None
+    gps_lon: float | None = None
     is_active: bool
     created_at: str
 

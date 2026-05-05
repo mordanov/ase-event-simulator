@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 
-
 _TRUTHY = {"1", "true", "yes", "y", "on"}
 _FALSY = {"0", "false", "no", "n", "off"}
 
@@ -49,4 +48,3 @@ def is_cloud_mode() -> bool:
         return True
 
     return False
-

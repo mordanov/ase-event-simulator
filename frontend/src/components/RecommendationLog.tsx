@@ -5,19 +5,17 @@ interface Props {
   status: SessionStatus | null;
 }
 
-type Tier = 'bronze' | 'silver' | 'gold' | 'platinum';
-
 const TIER_COLOR: Record<string, string> = {
-  bronze:   '#c97a3d',
-  silver:   '#94a3b8',
-  gold:     '#f59e0b',
+  bronze: '#c97a3d',
+  silver: '#94a3b8',
+  gold: '#f59e0b',
   platinum: '#38bdf8',
 };
 
 const TIER_LABEL: Record<string, string> = {
-  bronze:   'Bronze',
-  silver:   'Silver',
-  gold:     'Gold',
+  bronze: 'Bronze',
+  silver: 'Silver',
+  gold: 'Gold',
   platinum: 'Platinum',
 };
 
@@ -32,7 +30,9 @@ export function RecommendationLog({ status }: Props) {
     <div style={styles.card}>
       <div style={styles.header}>
         <span style={styles.title}>Recommendations</span>
-        <span style={styles.count}>{log.length} call{log.length !== 1 ? 's' : ''}</span>
+        <span style={styles.count}>
+          {log.length} call{log.length !== 1 ? 's' : ''}
+        </span>
       </div>
 
       <div style={styles.list}>
@@ -41,11 +41,14 @@ export function RecommendationLog({ status }: Props) {
           const tierKey = (entry.reward_tier ?? 'bronze').toLowerCase();
           const tierColor = TIER_COLOR[tierKey] ?? '#64748b';
           const tierLabel = TIER_LABEL[tierKey] ?? entry.reward_tier;
-          const hasRecs = Array.isArray((entry.response as any)?.recommendations)
-            && (entry.response as any).recommendations.length > 0;
+          const hasRecs =
+            Array.isArray((entry.response as any)?.recommendations) &&
+            (entry.response as any).recommendations.length > 0;
           const recCount = hasRecs ? (entry.response as any).recommendations.length : 0;
           const time = new Date(entry.timestamp).toLocaleTimeString([], {
-            hour: '2-digit', minute: '2-digit', second: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
           });
 
           return (
@@ -94,9 +97,7 @@ export function RecommendationLog({ status }: Props) {
                 <span style={styles.arrow}>{isOpen ? '▲' : '▼'}</span>
               </div>
 
-              {isOpen && (
-                <DetailPanel entry={entry} />
-              )}
+              {isOpen && <DetailPanel entry={entry} />}
             </React.Fragment>
           );
         })}
@@ -126,9 +127,7 @@ function DetailPanel({ entry }: { entry: RecommendationLog }) {
         </button>
       </div>
 
-      {tab === 'request' && (
-        <pre style={styles.json}>{JSON.stringify(entry.request, null, 2)}</pre>
-      )}
+      {tab === 'request' && <pre style={styles.json}>{JSON.stringify(entry.request, null, 2)}</pre>}
 
       {tab === 'response' && (
         <div>
@@ -137,17 +136,29 @@ function DetailPanel({ entry }: { entry: RecommendationLog }) {
           ) : (
             <>
               <div style={styles.metaRow}>
-                <MetaChip label="Credits before" value={String(entry.balance_before)} color="#64748b" />
-                <MetaChip label="Credits after"  value={String(entry.balance_after)}  color={entry.credits_spent > 0 ? '#f87171' : '#64748b'} />
-                <MetaChip label="Spent"          value={String(entry.credits_spent)}  color="#f87171" />
+                <MetaChip
+                  label="Credits before"
+                  value={String(entry.balance_before)}
+                  color="#64748b"
+                />
+                <MetaChip
+                  label="Credits after"
+                  value={String(entry.balance_after)}
+                  color={entry.credits_spent > 0 ? '#f87171' : '#64748b'}
+                />
+                <MetaChip label="Spent" value={String(entry.credits_spent)} color="#f87171" />
                 {entry.response && (
                   <>
-                    <MetaChip label="Providers"
+                    <MetaChip
+                      label="Providers"
                       value={`${(entry.response as any).providers_succeeded ?? 0}/${(entry.response as any).providers_called ?? 0}`}
-                      color="#60a5fa" />
-                    <MetaChip label="Latency"
+                      color="#60a5fa"
+                    />
+                    <MetaChip
+                      label="Latency"
                       value={`${((entry.response as any).duration_ms ?? 0).toFixed(0)} ms`}
-                      color="#a78bfa" />
+                      color="#a78bfa"
+                    />
                   </>
                 )}
               </div>
@@ -161,9 +172,7 @@ function DetailPanel({ entry }: { entry: RecommendationLog }) {
                   {recommendations.map((r: any, i: number) => (
                     <div key={i} style={styles.recItem}>
                       <div style={styles.recText}>{r.short_text}</div>
-                      {r.detail && (
-                        <div style={styles.recDetail}>{r.detail}</div>
-                      )}
+                      {r.detail && <div style={styles.recDetail}>{r.detail}</div>}
                       <div style={styles.recMeta}>
                         <span style={{ color: '#475569' }}>
                           providers: {Array.isArray(r.providers) ? r.providers.join(', ') : '—'}

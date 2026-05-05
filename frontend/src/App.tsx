@@ -10,9 +10,19 @@ import { useSimulator } from './hooks/useSimulator';
 
 export default function App() {
   const {
-    status, loading, error, backendOnline,
-    deviceTypes, scenarios, protocols, sendModes, defaults,
-    start, stop, stopAll, isRunning,
+    status,
+    loading,
+    error,
+    backendOnline,
+    deviceTypes,
+    scenarios,
+    protocols,
+    sendModes,
+    defaults,
+    start,
+    stop,
+    stopAll,
+    isRunning,
   } = useSimulator();
 
   return (
@@ -58,9 +68,7 @@ export default function App() {
       </div>
 
       {/* ── Error banner ── */}
-      {error && (
-        <div style={styles.errorBanner}>⚠ {error}</div>
-      )}
+      {error && <div style={styles.errorBanner}>⚠ {error}</div>}
 
       {/* ── Stats bar ── */}
       <StatsBar status={status} backendOnline={backendOnline} />

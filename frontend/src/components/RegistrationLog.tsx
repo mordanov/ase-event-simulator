@@ -12,18 +12,18 @@ interface DeviceSummary {
   state: DeviceState;
   message: string;
   timestamp: string;
-  detail: RegistrationEvent | null;  // enriched event with request/response
+  detail: RegistrationEvent | null; // enriched event with request/response
 }
 
 const STATE_COLOR: Record<DeviceState, string> = {
-  pending:    '#f59e0b',
-  rejected:   '#ef4444',
+  pending: '#f59e0b',
+  rejected: '#ef4444',
   registered: '#22c55e',
 };
 
 const STATE_ICON: Record<DeviceState, string> = {
-  pending:    '⏳',
-  rejected:   '✗',
+  pending: '⏳',
+  rejected: '✗',
   registered: '✓',
 };
 
@@ -39,12 +39,12 @@ function summariseDevices(log: RegistrationEvent[]): DeviceSummary[] {
     }
   }
 
-  return Array.from(latestStatus.values()).map(ev => ({
+  return Array.from(latestStatus.values()).map((ev) => ({
     device_id: ev.device_id,
-    state:     (ev.status as DeviceState) ?? 'pending',
-    message:   ev.message,
+    state: (ev.status as DeviceState) ?? 'pending',
+    message: ev.message,
     timestamp: ev.timestamp,
-    detail:    latestDetail.get(ev.device_id) ?? null,
+    detail: latestDetail.get(ev.device_id) ?? null,
   }));
 }
 
@@ -53,7 +53,9 @@ export function RegistrationLog({ status }: Props) {
 
   const visible =
     status != null &&
-    (status.registration_phase || status.devices_registered > 0 || (status.registration_log?.length ?? 0) > 0);
+    (status.registration_phase ||
+      status.devices_registered > 0 ||
+      (status.registration_log?.length ?? 0) > 0);
 
   const devices = useMemo(
     () => summariseDevices(status?.registration_log ?? []),
@@ -62,12 +64,12 @@ export function RegistrationLog({ status }: Props) {
 
   if (!visible) return null;
 
-  const total      = status!.devices_total;
+  const total = status!.devices_total;
   const registered = status!.devices_registered;
-  const pending    = status!.devices_pending;
+  const pending = status!.devices_pending;
   const inProgress = status!.registration_phase;
 
-  const toggle = (id: string) => setExpanded(prev => prev === id ? null : id);
+  const toggle = (id: string) => setExpanded((prev) => (prev === id ? null : id));
 
   return (
     <div style={styles.card}>
@@ -79,9 +81,9 @@ export function RegistrationLog({ status }: Props) {
           {inProgress && <span style={styles.phaseLabel}> — JITR in progress</span>}
         </span>
         <div style={styles.counters}>
-          <Chip label="Total"      value={total}      color="#64748b" />
+          <Chip label="Total" value={total} color="#64748b" />
           <Chip label="Registered" value={registered} color="#22c55e" />
-          <Chip label="Pending"    value={pending}    color="#f59e0b" />
+          <Chip label="Pending" value={pending} color="#f59e0b" />
         </div>
       </div>
 
@@ -101,7 +103,7 @@ export function RegistrationLog({ status }: Props) {
       {/* Device list */}
       {devices.length > 0 && (
         <div style={styles.list}>
-          {devices.map(d => (
+          {devices.map((d) => (
             <React.Fragment key={d.device_id}>
               <div
                 style={{
@@ -116,20 +118,14 @@ export function RegistrationLog({ status }: Props) {
                   {STATE_ICON[d.state] ?? '?'}
                 </span>
                 <span style={styles.deviceId}>{d.device_id}</span>
-                <span style={{ ...styles.state, color: STATE_COLOR[d.state] }}>
-                  {d.state}
-                </span>
+                <span style={{ ...styles.state, color: STATE_COLOR[d.state] }}>{d.state}</span>
                 <span style={styles.message}>{d.message}</span>
                 {d.detail && (
-                  <span style={styles.expandIcon}>
-                    {expanded === d.device_id ? '▲' : '▼'}
-                  </span>
+                  <span style={styles.expandIcon}>{expanded === d.device_id ? '▲' : '▼'}</span>
                 )}
               </div>
 
-              {expanded === d.device_id && d.detail && (
-                <DetailPanel detail={d.detail} />
-              )}
+              {expanded === d.device_id && d.detail && <DetailPanel detail={d.detail} />}
             </React.Fragment>
           ))}
         </div>
@@ -160,9 +156,7 @@ function DetailPanel({ detail }: { detail: RegistrationEvent }) {
       </div>
 
       {tab === 'request' && (
-        <pre style={styles.json}>
-          {JSON.stringify(detail.request_payload, null, 2)}
-        </pre>
+        <pre style={styles.json}>{JSON.stringify(detail.request_payload, null, 2)}</pre>
       )}
 
       {tab === 'response' && (
@@ -186,14 +180,25 @@ function EndpointResponse({ response }: { response: RegistrationEndpointResponse
   let prettyBody = response.body;
   try {
     prettyBody = JSON.stringify(JSON.parse(response.body), null, 2);
-  } catch { /* not JSON — show as-is */ }
+  } catch {
+    /* not JSON — show as-is */
+  }
 
   return (
     <div style={styles.endpointBlock}>
       <div style={styles.endpointHeader}>
         <span style={{ color: '#94a3b8', fontSize: 11 }}>{response.name}</span>
-        <span style={{ color: '#475569', fontSize: 10, flex: 1, marginLeft: 8,
-          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        <span
+          style={{
+            color: '#475569',
+            fontSize: 10,
+            flex: 1,
+            marginLeft: 8,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+          }}
+        >
           {response.url}
         </span>
         <span style={{ color: statusColor, fontWeight: 700, fontSize: 11 }}>

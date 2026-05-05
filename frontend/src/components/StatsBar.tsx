@@ -51,18 +51,20 @@ export function StatsBar({ status, backendOnline }: Props) {
   return (
     <div style={styles.bar}>
       <div style={styles.statusChip}>
-        <div style={{
-          ...styles.dot,
-          background: running ? '#4ade80' : backendOnline === false ? '#f87171' : '#475569',
-          boxShadow: running ? '0 0 8px #4ade8088' : 'none',
-          animation: running ? 'pulse 1.5s infinite' : 'none',
-        }} />
+        <div
+          style={{
+            ...styles.dot,
+            background: running ? '#4ade80' : backendOnline === false ? '#f87171' : '#475569',
+            boxShadow: running ? '0 0 8px #4ade8088' : 'none',
+            animation: running ? 'pulse 1.5s infinite' : 'none',
+          }}
+        />
         <span style={{ ...styles.statusText, color: running ? '#4ade80' : '#475569' }}>
           {running ? 'RUNNING' : backendOnline === false ? 'BACKEND OFFLINE' : 'IDLE'}
         </span>
       </div>
 
-      {stats.map(s => (
+      {stats.map((s) => (
         <div key={s.label} style={styles.stat}>
           <span style={styles.statIcon}>{s.icon}</span>
           <div>

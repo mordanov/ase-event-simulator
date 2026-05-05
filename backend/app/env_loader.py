@@ -8,6 +8,7 @@ from pathlib import Path
 try:
     from dotenv import dotenv_values, load_dotenv
 except ImportError:  # pragma: no cover - fallback for minimal runtime images
+
     def load_dotenv(*args, **kwargs):
         return False
 
@@ -64,5 +65,3 @@ def bootstrap_environment() -> None:
     load_dotenv(dotenv_path=root / ".env", override=False)
     load_dotenv(dotenv_path=root / ".env.local", override=False)
     _load_dotenv_text_from_env()
-
-

@@ -8,4 +8,14 @@ export default defineConfig({
     host: '0.0.0.0',
     port: 3000,
   },
+  test: {
+    environment: 'happy-dom',
+    globals: true,
+    setupFiles: ['./src/test/setup.ts'],
+    coverage: {
+      provider: 'v8',
+      include: ['src/**/*.{ts,tsx}'],
+      exclude: ['src/test/**', 'src/main.tsx'],
+    },
+  },
 });

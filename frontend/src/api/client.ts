@@ -1,7 +1,14 @@
 import type {
-  SessionConfig, SessionStatus, TelemetryEvent, MetaOption,
-  DeviceType, ScenarioType, TransportProtocol,
-  DeviceStats, SeedDevicesRequest, SeedDevicesResponse,
+  SessionConfig,
+  SessionStatus,
+  TelemetryEvent,
+  MetaOption,
+  DeviceType,
+  ScenarioType,
+  TransportProtocol,
+  DeviceStats,
+  SeedDevicesRequest,
+  SeedDevicesResponse,
   SimulatorDefaults,
 } from '../types';
 
@@ -31,36 +38,29 @@ export const api = {
   stopSession: (id: string) =>
     req<{ session_id: string; message: string; final_stats: SessionStatus }>(
       `/api/v1/sessions/${id}/stop`,
-      { method: 'POST' }
+      { method: 'POST' },
     ),
 
-  getStatus: (id: string) =>
-    req<SessionStatus>(`/api/v1/sessions/${id}/status`),
+  getStatus: (id: string) => req<SessionStatus>(`/api/v1/sessions/${id}/status`),
 
-  listSessions: () =>
-    req<SessionStatus[]>('/api/v1/sessions'),
+  listSessions: () => req<SessionStatus[]>('/api/v1/sessions'),
 
-  stopAll: () =>
-    req<{ message: string }>('/api/v1/sessions/stop-all', { method: 'POST' }),
+  stopAll: () => req<{ message: string }>('/api/v1/sessions/stop-all', { method: 'POST' }),
 
   // ── Meta ────────────────────────────────────────────────────────────────
 
   getDeviceTypes: () => req<MetaOption[]>('/api/v1/meta/device-types'),
-  getScenarios:   () => req<MetaOption[]>('/api/v1/meta/scenarios'),
-  getProtocols:   () => req<MetaOption[]>('/api/v1/meta/protocols'),
-  getSendModes:   () => req<MetaOption[]>('/api/v1/meta/send-modes'),
-  getDefaults:    () => req<SimulatorDefaults>('/api/v1/meta/defaults'),
+  getScenarios: () => req<MetaOption[]>('/api/v1/meta/scenarios'),
+  getProtocols: () => req<MetaOption[]>('/api/v1/meta/protocols'),
+  getSendModes: () => req<MetaOption[]>('/api/v1/meta/send-modes'),
+  getDefaults: () => req<SimulatorDefaults>('/api/v1/meta/defaults'),
 
   // ── Preview ─────────────────────────────────────────────────────────────
 
-  previewEvent: (
-    deviceType: DeviceType,
-    scenario: ScenarioType,
-    protocol: TransportProtocol,
-  ) =>
+  previewEvent: (deviceType: DeviceType, scenario: ScenarioType, protocol: TransportProtocol) =>
     req<TelemetryEvent>(
       `/api/v1/preview?device_type=${deviceType}&scenario=${scenario}&protocol=${protocol}`,
-      { method: 'POST' }
+      { method: 'POST' },
     ),
 
   health: () => req<{ status: string; active_sessions: number }>('/health'),

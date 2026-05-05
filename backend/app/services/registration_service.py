@@ -14,14 +14,15 @@ With a real AWS IoT Core setup:
 
 Devices that are already registered skip all steps and proceed immediately.
 """
+
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
 import os
-from datetime import datetime, timezone
-from typing import Callable
+from collections.abc import Callable
+from datetime import UTC, datetime
 
 from sqlalchemy import select, update
 
@@ -35,14 +36,16 @@ logger = logging.getLogger(__name__)
 CERT_APPROVAL_DELAY: float = float(os.getenv("CERT_APPROVAL_DELAY_SECONDS", "5"))
 IOT_POLICY_NAME = os.getenv("AWS_IOT_POLICY_NAME", "HealthSimulatorDevicePolicy")
 IOT_THING_TYPE = os.getenv("AWS_IOT_THING_TYPE", "HealthSimulatorDevice")
-IOT_TOPIC_PREFIX = os.getenv("AWS_IOT_TOPIC_PREFIX", os.getenv("DEFAULT_MQTT_TOPIC", "health/telemetry"))
+IOT_TOPIC_PREFIX = os.getenv(
+    "AWS_IOT_TOPIC_PREFIX", os.getenv("DEFAULT_MQTT_TOPIC", "health/telemetry")
+)
 IOT_REGISTRATION_MODE = os.getenv("AWS_IOT_REGISTRATION_MODE", "direct").strip().lower()
 
 # Registration status constants
 STATUS_UNREGISTERED = "unregistered"
-STATUS_PENDING      = "pending"
-STATUS_REGISTERED   = "registered"
-STATUS_REJECTED     = "rejected"   # permanent rejection (not used in simulation, for future use)
+STATUS_PENDING = "pending"
+STATUS_REGISTERED = "registered"
+STATUS_REJECTED = "rejected"  # permanent rejection (not used in simulation, for future use)
 
 REG_MODE_DIRECT = "direct"
 REG_MODE_JITR = "jitr"
@@ -55,6 +58,7 @@ RegistrationCallback = Callable[[str, str, str], None]
 
 
 # ─── Core registration logic ──────────────────────────────────────────────────
+
 
 async def register_devices(
     device_ids: list[str],
@@ -70,18 +74,20 @@ async def register_devices(
 
     async with async_session_factory() as db:
         rows = (
-            await db.execute(
-                select(Device).where(Device.device_id.in_(device_ids))
-            )
-        ).scalars().all()
+            (await db.execute(select(Device).where(Device.device_id.in_(device_ids))))
+            .scalars()
+            .all()
+        )
 
     # Partition: already registered vs needs registration
     already_registered = [d for d in rows if d.registration_status == STATUS_REGISTERED]
-    needs_registration  = [d for d in rows if d.registration_status != STATUS_REGISTERED]
+    needs_registration = [d for d in rows if d.registration_status != STATUS_REGISTERED]
 
     for d in already_registered:
         fingerprints[d.device_id] = d.cert_fingerprint or ""
-        _emit(on_event, d.device_id, STATUS_REGISTERED, "cert already active — skipping registration")
+        _emit(
+            on_event, d.device_id, STATUS_REGISTERED, "cert already active — skipping registration"
+        )
 
     if not needs_registration:
         return fingerprints
@@ -91,8 +97,12 @@ async def register_devices(
     for d in needs_registration:
         dev_cert = generate_device_cert(d.device_id)
         cert_map[d.device_id] = dev_cert
-        _emit(on_event, d.device_id, STATUS_PENDING,
-              f"cert generated (serial={dev_cert.serial[:16]}…), submitting to registration authority")
+        _emit(
+            on_event,
+            d.device_id,
+            STATUS_PENDING,
+            f"cert generated (serial={dev_cert.serial[:16]}…), submitting to registration authority",
+        )
 
     async with async_session_factory() as db:
         for d in needs_registration:
@@ -136,17 +146,22 @@ async def register_devices(
 
     # ── Phase 2: simulate first connection → JITR rejection ───────────────────
     for d in needs_registration:
-        _emit(on_event, d.device_id, "rejected",
-              f"first connection rejected (JITR) — waiting {CERT_APPROVAL_DELAY}s for approval")
+        _emit(
+            on_event,
+            d.device_id,
+            "rejected",
+            f"first connection rejected (JITR) — waiting {CERT_APPROVAL_DELAY}s for approval",
+        )
 
     logger.info(
         "JITR: %d device(s) in pending state — waiting %.1fs for cert activation",
-        len(needs_registration), CERT_APPROVAL_DELAY,
+        len(needs_registration),
+        CERT_APPROVAL_DELAY,
     )
     await asyncio.sleep(CERT_APPROVAL_DELAY)
 
     # ── Phase 3: second connection → accepted, mark registered ───────────────
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     async with async_session_factory() as db:
         for d in needs_registration:
             await db.execute(
@@ -159,8 +174,12 @@ async def register_devices(
     for d in needs_registration:
         dc = cert_map[d.device_id]
         fingerprints[d.device_id] = dc.fingerprint
-        _emit(on_event, d.device_id, STATUS_REGISTERED,
-              "cert activated — device registered, telemetry will start")
+        _emit(
+            on_event,
+            d.device_id,
+            STATUS_REGISTERED,
+            "cert activated — device registered, telemetry will start",
+        )
 
     return fingerprints
 
@@ -175,8 +194,7 @@ def _get_iot_registration_mode() -> str:
     mode = IOT_REGISTRATION_MODE
     if mode not in {REG_MODE_DIRECT, REG_MODE_JITR}:
         raise RuntimeError(
-            "Invalid AWS_IOT_REGISTRATION_MODE. Expected 'direct' or 'jitr', "
-            f"got: {mode!r}"
+            f"Invalid AWS_IOT_REGISTRATION_MODE. Expected 'direct' or 'jitr', got: {mode!r}"
         )
     return mode
 
@@ -191,26 +209,28 @@ def _default_iot_policy_document() -> str:
 
     account = boto3.client("sts").get_caller_identity()["Account"]
     base = f"arn:aws:iot:{region}:{account}"
-    return json.dumps({
-        "Version": "2012-10-17",
-        "Statement": [
-            {
-                "Effect": "Allow",
-                "Action": "iot:Connect",
-                "Resource": f"{base}:client/${{iot:Connection.Thing.ThingName}}",
-            },
-            {
-                "Effect": "Allow",
-                "Action": ["iot:Publish", "iot:Receive"],
-                "Resource": f"{base}:topic/{IOT_TOPIC_PREFIX}/${{iot:Connection.Thing.ThingName}}",
-            },
-            {
-                "Effect": "Allow",
-                "Action": "iot:Subscribe",
-                "Resource": f"{base}:topicfilter/{IOT_TOPIC_PREFIX}/${{iot:Connection.Thing.ThingName}}",
-            },
-        ],
-    })
+    return json.dumps(
+        {
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Action": "iot:Connect",
+                    "Resource": f"{base}:client/${{iot:Connection.Thing.ThingName}}",
+                },
+                {
+                    "Effect": "Allow",
+                    "Action": ["iot:Publish", "iot:Receive"],
+                    "Resource": f"{base}:topic/{IOT_TOPIC_PREFIX}/${{iot:Connection.Thing.ThingName}}",
+                },
+                {
+                    "Effect": "Allow",
+                    "Action": "iot:Subscribe",
+                    "Resource": f"{base}:topicfilter/{IOT_TOPIC_PREFIX}/${{iot:Connection.Thing.ThingName}}",
+                },
+            ],
+        }
+    )
 
 
 def _provision_device_in_aws(device_id: str, cert_pem: str) -> None:
@@ -248,13 +268,18 @@ async def _register_devices_in_aws(
     cert_map: dict[str, DeviceCert],
     on_event: RegistrationCallback | None,
 ) -> None:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     failed: list[str] = []
 
     for d in devices:
         dc = cert_map[d.device_id]
         try:
-            _emit(on_event, d.device_id, STATUS_PENDING, "provisioning certificate and thing in AWS IoT")
+            _emit(
+                on_event,
+                d.device_id,
+                STATUS_PENDING,
+                "provisioning certificate and thing in AWS IoT",
+            )
             await asyncio.to_thread(_provision_device_in_aws, d.device_id, dc.cert_pem)
 
             async with async_session_factory() as db:
@@ -272,6 +297,6 @@ async def _register_devices_in_aws(
             _emit(on_event, d.device_id, STATUS_REJECTED, f"AWS IoT registration failed: {exc}")
 
     if failed:
-        raise RuntimeError(f"AWS IoT registration failed for {len(failed)} device(s): {', '.join(failed[:10])}")
-
-
+        raise RuntimeError(
+            f"AWS IoT registration failed for {len(failed)} device(s): {', '.join(failed[:10])}"
+        )

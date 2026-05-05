@@ -1,0 +1,38 @@
+repos:
+  # ── Python: ruff lint + format ───────────────────────────────────────────────
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.9.0
+    hooks:
+      - id: ruff
+        args: [--fix]
+        files: ^backend/
+      - id: ruff-format
+        files: ^backend/
+
+  # ── TypeScript / React: ESLint + Prettier + tsc ──────────────────────────────
+  - repo: local
+    hooks:
+      - id: frontend-prettier
+        name: Prettier (frontend)
+        language: node
+        entry: npx prettier --write
+        types_or: [ts, tsx]
+        files: ^frontend/src/
+        additional_dependencies:
+          - prettier@^3.0.0
+
+      - id: frontend-eslint
+        name: ESLint (frontend)
+        language: system
+        entry: bash -c 'cd frontend && npx eslint --fix src'
+        pass_filenames: false
+        files: ^frontend/src/
+        types_or: [ts, tsx]
+
+      - id: frontend-typecheck
+        name: TypeScript typecheck (frontend)
+        language: system
+        entry: bash -c 'cd frontend && npx tsc --noEmit'
+        pass_filenames: false
+        files: ^frontend/src/
+        types_or: [ts, tsx]

@@ -9,6 +9,7 @@ CA loading priority:
 Device certs are RSA-2048, signed by the CA, valid for CERT_VALIDITY_DAYS days.
 CN = device_id, so AWS IoT Core policies can reference it directly.
 """
+
 from __future__ import annotations
 
 import datetime
@@ -30,6 +31,7 @@ CERT_ORG = os.getenv("DEVICE_CERT_ORG", "HealthSimulator")
 
 # ─── CA loading ───────────────────────────────────────────────────────────────
 
+
 def _pem_from_env_or_file(pem_var: str, file_var: str) -> str | None:
     raw = os.getenv(pem_var, "").strip()
     if raw:
@@ -43,12 +45,14 @@ def _pem_from_env_or_file(pem_var: str, file_var: str) -> str | None:
 def _generate_self_signed_ca() -> tuple[x509.Certificate, RSAPrivateKey]:
     """Generate a throwaway self-signed CA for local testing."""
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    name = x509.Name([
-        x509.NameAttribute(NameOID.COUNTRY_NAME, CERT_COUNTRY),
-        x509.NameAttribute(NameOID.ORGANIZATION_NAME, CERT_ORG),
-        x509.NameAttribute(NameOID.COMMON_NAME, f"{CERT_ORG} Self-Signed CA"),
-    ])
-    now = datetime.datetime.now(datetime.timezone.utc)
+    name = x509.Name(
+        [
+            x509.NameAttribute(NameOID.COUNTRY_NAME, CERT_COUNTRY),
+            x509.NameAttribute(NameOID.ORGANIZATION_NAME, CERT_ORG),
+            x509.NameAttribute(NameOID.COMMON_NAME, f"{CERT_ORG} Self-Signed CA"),
+        ]
+    )
+    now = datetime.datetime.now(datetime.UTC)
     cert = (
         x509.CertificateBuilder()
         .subject_name(name)
@@ -67,11 +71,11 @@ def _generate_self_signed_ca() -> tuple[x509.Certificate, RSAPrivateKey]:
 def load_ca() -> tuple[x509.Certificate, RSAPrivateKey]:
     """Return (ca_cert, ca_key). Cached for the process lifetime."""
     cert_pem = _pem_from_env_or_file("CA_CERT_PEM", "CA_CERT_FILE")
-    key_pem  = _pem_from_env_or_file("CA_KEY_PEM",  "CA_KEY_FILE")
+    key_pem = _pem_from_env_or_file("CA_KEY_PEM", "CA_KEY_FILE")
 
     if cert_pem and key_pem:
         ca_cert = x509.load_pem_x509_certificate(cert_pem.encode())
-        ca_key  = serialization.load_pem_private_key(key_pem.encode(), password=None)
+        ca_key = serialization.load_pem_private_key(key_pem.encode(), password=None)
         return ca_cert, ca_key  # type: ignore[return-value]
 
     if is_cloud_mode():
@@ -81,6 +85,7 @@ def load_ca() -> tuple[x509.Certificate, RSAPrivateKey]:
 
     # Fallback: auto-generate (emits a warning — not suitable for real AWS IoT)
     import logging
+
     logging.getLogger(__name__).warning(
         "CA_CERT_PEM/CA_CERT_FILE not set — using auto-generated self-signed CA. "
         "Register this CA with AWS IoT Core for real mTLS."
@@ -95,17 +100,18 @@ def ca_cert_pem() -> str:
 
 # ─── Device cert generation ───────────────────────────────────────────────────
 
+
 class DeviceCert:
     cert_pem: str
     key_pem: str
-    fingerprint: str   # hex SHA-256
-    serial: str        # decimal serial number
+    fingerprint: str  # hex SHA-256
+    serial: str  # decimal serial number
 
     def __init__(self, cert_pem: str, key_pem: str, fingerprint: str, serial: str):
-        self.cert_pem    = cert_pem
-        self.key_pem     = key_pem
+        self.cert_pem = cert_pem
+        self.key_pem = key_pem
         self.fingerprint = fingerprint
-        self.serial      = serial
+        self.serial = serial
 
 
 def generate_device_cert(device_id: str) -> DeviceCert:
@@ -120,12 +126,14 @@ def generate_device_cert(device_id: str) -> DeviceCert:
     # Device key pair
     dev_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
 
-    subject = x509.Name([
-        x509.NameAttribute(NameOID.COUNTRY_NAME, CERT_COUNTRY),
-        x509.NameAttribute(NameOID.ORGANIZATION_NAME, CERT_ORG),
-        x509.NameAttribute(NameOID.COMMON_NAME, device_id),
-    ])
-    now = datetime.datetime.now(datetime.timezone.utc)
+    subject = x509.Name(
+        [
+            x509.NameAttribute(NameOID.COUNTRY_NAME, CERT_COUNTRY),
+            x509.NameAttribute(NameOID.ORGANIZATION_NAME, CERT_ORG),
+            x509.NameAttribute(NameOID.COMMON_NAME, device_id),
+        ]
+    )
+    now = datetime.datetime.now(datetime.UTC)
 
     cert = (
         x509.CertificateBuilder()
@@ -144,12 +152,12 @@ def generate_device_cert(device_id: str) -> DeviceCert:
     )
 
     cert_pem = cert.public_bytes(serialization.Encoding.PEM).decode()
-    key_pem  = dev_key.private_bytes(
+    key_pem = dev_key.private_bytes(
         encoding=serialization.Encoding.PEM,
         format=serialization.PrivateFormat.TraditionalOpenSSL,
         encryption_algorithm=serialization.NoEncryption(),
     ).decode()
     fingerprint = cert.fingerprint(hashes.SHA256()).hex()
-    serial      = str(cert.serial_number)
+    serial = str(cert.serial_number)
 
     return DeviceCert(cert_pem, key_pem, fingerprint, serial)

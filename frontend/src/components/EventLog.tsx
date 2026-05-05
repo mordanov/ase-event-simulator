@@ -6,25 +6,25 @@ interface Props {
 }
 
 const TYPE_COLORS: Record<string, string> = {
-  workout:        '#fb923c',
-  sleep:          '#818cf8',
-  rest:           '#34d399',
-  emergency:      '#f87171',
-  random:         '#a78bfa',
-  registration:   '#38bdf8',
-  rewards:        '#4ade80',
+  workout: '#fb923c',
+  sleep: '#818cf8',
+  rest: '#34d399',
+  emergency: '#f87171',
+  random: '#a78bfa',
+  registration: '#38bdf8',
+  rewards: '#4ade80',
   recommendation: '#c084fc',
-  disabled:       '#334155',
+  disabled: '#334155',
 };
 
 const STATUS_COLORS: Record<string, string> = {
-  ok:         '#4ade80',
-  anomaly:    '#f97316',
-  error:      '#f87171',
+  ok: '#4ade80',
+  anomaly: '#f97316',
+  error: '#f87171',
   registered: '#38bdf8',
-  rejected:   '#f87171',
-  pending:    '#fbbf24',
-  disabled:   '#334155',
+  rejected: '#f87171',
+  pending: '#fbbf24',
+  disabled: '#334155',
 };
 
 function getSummary(ev: ActivityEvent): string {
@@ -35,7 +35,8 @@ function getSummary(ev: ActivityEvent): string {
     case 'rest':
     case 'emergency':
     case 'random': {
-      const proto = ((d.payload as Record<string, unknown> | undefined)?.protocol as string | undefined) ?? '';
+      const proto =
+        ((d.payload as Record<string, unknown> | undefined)?.protocol as string | undefined) ?? '';
       return proto ? proto.toUpperCase() : '';
     }
     case 'registration':
@@ -54,7 +55,9 @@ function getSummary(ev: ActivityEvent): string {
       return [
         count != null ? `${count} rec${count !== 1 ? 's' : ''}` : null,
         spent != null && spent > 0 ? `−${spent} credits` : null,
-      ].filter(Boolean).join(' · ');
+      ]
+        .filter(Boolean)
+        .join(' · ');
     }
     case 'disabled':
       return 'event skipped';
@@ -93,15 +96,22 @@ function EndpointResponses({ responses }: { responses: unknown[] }) {
           <div key={i} style={styles.endpointBlock}>
             <div style={styles.endpointHeader}>
               <span style={styles.endpointName}>{String(r.name ?? '—')}</span>
-              <span style={{ ...styles.endpointCode, color: ok ? '#4ade80' : (r.error ? '#f87171' : '#94a3b8') }}>
-                {code != null ? `HTTP ${code}` : (r.error ? 'ERROR' : 'N/A')}
+              <span
+                style={{
+                  ...styles.endpointCode,
+                  color: ok ? '#4ade80' : r.error ? '#f87171' : '#94a3b8',
+                }}
+              >
+                {code != null ? `HTTP ${code}` : r.error ? 'ERROR' : 'N/A'}
               </span>
             </div>
-            {r.body != null
-              ? <JsonBlock value={r.body} />
-              : r.error
-              ? <pre style={{ ...styles.json, color: '#f87171' }}>{String(r.error)}</pre>
-              : <div style={styles.noData}>No response body (mock transport)</div>}
+            {r.body != null ? (
+              <JsonBlock value={r.body} />
+            ) : r.error ? (
+              <pre style={{ ...styles.json, color: '#f87171' }}>{String(r.error)}</pre>
+            ) : (
+              <div style={styles.noData}>No response body (mock transport)</div>
+            )}
           </div>
         );
       })}
@@ -157,15 +167,23 @@ function EventModalBody({ ev }: { ev: ActivityEvent }) {
             {req ? <JsonBlock value={req} /> : <NoData label="request" />}
           </ModalSection>
           <ModalSection label={err ? 'Error' : 'Response'}>
-            {resp
-              ? <JsonBlock value={resp} />
-              : err
-              ? <pre style={{ ...styles.json, color: '#f87171' }}>{String(err)}</pre>
-              : <NoData label="response" />}
+            {resp ? (
+              <JsonBlock value={resp} />
+            ) : err ? (
+              <pre style={{ ...styles.json, color: '#f87171' }}>{String(err)}</pre>
+            ) : (
+              <NoData label="response" />
+            )}
           </ModalSection>
           {'balance_before' in d && (
             <ModalSection label="Credits">
-              <JsonBlock value={{ balance_before: d.balance_before, balance_after: d.balance_after, credits_spent: d.credits_spent }} />
+              <JsonBlock
+                value={{
+                  balance_before: d.balance_before,
+                  balance_after: d.balance_after,
+                  credits_spent: d.credits_spent,
+                }}
+              />
             </ModalSection>
           )}
         </>
@@ -175,7 +193,9 @@ function EventModalBody({ ev }: { ev: ActivityEvent }) {
     case 'rewards':
       return (
         <ModalSection label="Credit Details">
-          <div style={styles.noData}>Credited by the ingest API — no separate HTTP request/response.</div>
+          <div style={styles.noData}>
+            Credited by the ingest API — no separate HTTP request/response.
+          </div>
           <JsonBlock value={d} />
         </ModalSection>
       );
@@ -184,15 +204,19 @@ function EventModalBody({ ev }: { ev: ActivityEvent }) {
       return (
         <ModalSection label="Device Disabled">
           <div style={{ ...styles.noData, color: '#475569' }}>
-            This device was disabled by the ingestion pipeline (HTTP 403 — DEVICE_DISABLED).
-            All subsequent telemetry events for this device are suppressed.
+            This device was disabled by the ingestion pipeline (HTTP 403 — DEVICE_DISABLED). All
+            subsequent telemetry events for this device are suppressed.
           </div>
           <JsonBlock value={d} />
         </ModalSection>
       );
 
     default:
-      return <ModalSection label="Data"><JsonBlock value={d} /></ModalSection>;
+      return (
+        <ModalSection label="Data">
+          <JsonBlock value={d} />
+        </ModalSection>
+      );
   }
 }
 
@@ -200,7 +224,9 @@ function EventModal({ ev, onClose }: { ev: ActivityEvent; onClose: () => void })
   const dialogRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
@@ -208,17 +234,16 @@ function EventModal({ ev, onClose }: { ev: ActivityEvent; onClose: () => void })
   const typeColor = TYPE_COLORS[ev.event_type] ?? '#64748b';
   const statusColor = STATUS_COLORS[ev.status] ?? '#64748b';
   const time = new Date(ev.timestamp).toLocaleString([], {
-    month: 'short', day: 'numeric',
-    hour: '2-digit', minute: '2-digit', second: '2-digit',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
   });
 
   return (
     <div style={styles.backdrop} onClick={onClose}>
-      <div
-        ref={dialogRef}
-        style={styles.dialog}
-        onClick={e => e.stopPropagation()}
-      >
+      <div ref={dialogRef} style={styles.dialog} onClick={(e) => e.stopPropagation()}>
         {/* Header */}
         <div style={styles.dialogHeader}>
           <div style={styles.dialogMeta}>
@@ -229,7 +254,9 @@ function EventModal({ ev, onClose }: { ev: ActivityEvent; onClose: () => void })
             <span style={{ ...styles.dialogStatus, color: statusColor }}>{ev.status}</span>
             <span style={styles.dialogTime}>{time}</span>
           </div>
-          <button style={styles.closeBtn} onClick={onClose}>✕</button>
+          <button style={styles.closeBtn} onClick={onClose}>
+            ✕
+          </button>
         </div>
 
         {/* Body */}
@@ -248,22 +275,30 @@ export function EventLog({ events }: Props) {
   const [modalEvent, setModalEvent] = useState<ActivityEvent | null>(null);
 
   // authorisation events are cert-generation internal messages with no HTTP I/O
-  const loggable = events.filter(e => e.event_type !== 'authorisation');
+  const loggable = events.filter((e) => e.event_type !== 'authorisation');
   const reversed = [...loggable].reverse();
-  const allTypes = Array.from(new Set(loggable.map(e => e.event_type)));
-  const visible = filter === 'all' ? reversed : reversed.filter(e => e.event_type === filter);
+  const allTypes = Array.from(new Set(loggable.map((e) => e.event_type)));
+  const visible = filter === 'all' ? reversed : reversed.filter((e) => e.event_type === filter);
 
   return (
     <div style={styles.panel}>
       <div style={styles.header}>
         <span style={styles.title}>Activity Log</span>
-        <span style={styles.count}>{visible.length}{filter !== 'all' ? ` / ${loggable.length}` : ''} events</span>
+        <span style={styles.count}>
+          {visible.length}
+          {filter !== 'all' ? ` / ${loggable.length}` : ''} events
+        </span>
       </div>
 
       {/* Filter chips */}
       <div style={styles.filters}>
-        <Chip label="ALL" active={filter === 'all'} color="#94a3b8" onClick={() => setFilter('all')} />
-        {allTypes.map(t => (
+        <Chip
+          label="ALL"
+          active={filter === 'all'}
+          color="#94a3b8"
+          onClick={() => setFilter('all')}
+        />
+        {allTypes.map((t) => (
           <Chip
             key={t}
             label={t.toUpperCase()}
@@ -283,7 +318,9 @@ export function EventLog({ events }: Props) {
             const typeColor = TYPE_COLORS[ev.event_type] ?? '#64748b';
             const statusColor = STATUS_COLORS[ev.status] ?? '#64748b';
             const time = new Date(ev.timestamp).toLocaleTimeString([], {
-              hour: '2-digit', minute: '2-digit', second: '2-digit',
+              hour: '2-digit',
+              minute: '2-digit',
+              second: '2-digit',
             });
             const summary = getSummary(ev);
 
@@ -299,9 +336,7 @@ export function EventLog({ events }: Props) {
                 </span>
                 <span style={styles.deviceId}>{ev.device_id.slice(-12)}</span>
                 <span style={styles.summary}>{summary}</span>
-                <span style={{ ...styles.statusBadge, color: statusColor }}>
-                  {ev.status}
-                </span>
+                <span style={{ ...styles.statusBadge, color: statusColor }}>{ev.status}</span>
                 <span style={styles.time}>{time}</span>
                 <span style={styles.arrow}>›</span>
               </div>
@@ -311,14 +346,22 @@ export function EventLog({ events }: Props) {
       </div>
 
       {/* Modal */}
-      {modalEvent && (
-        <EventModal ev={modalEvent} onClose={() => setModalEvent(null)} />
-      )}
+      {modalEvent && <EventModal ev={modalEvent} onClose={() => setModalEvent(null)} />}
     </div>
   );
 }
 
-function Chip({ label, active, color, onClick }: { label: string; active: boolean; color: string; onClick: () => void }) {
+function Chip({
+  label,
+  active,
+  color,
+  onClick,
+}: {
+  label: string;
+  active: boolean;
+  color: string;
+  onClick: () => void;
+}) {
   return (
     <button
       style={{

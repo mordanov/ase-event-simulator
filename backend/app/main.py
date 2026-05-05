@@ -25,9 +25,8 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     # Create all tables (idempotent — SQLite ephemeral storage, no migrations needed)
     try:
-        from app.db import engine
-        from app.db import Base
         import app.models.device_orm  # noqa: F401 — ensures Device table is registered
+        from app.db import Base, engine
 
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
@@ -37,9 +36,10 @@ async def lifespan(app: FastAPI):
 
     # Log device count
     try:
+        from sqlalchemy import func, select
+
         from app.db import async_session_factory
         from app.models.device_orm import Device
-        from sqlalchemy import func, select
 
         async with async_session_factory() as db:
             count = (await db.execute(select(func.count(Device.id)))).scalar_one()

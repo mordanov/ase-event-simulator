@@ -22,7 +22,8 @@ export function useSimulator() {
 
   // ── Backend health check ───────────────────────────────────────────────
   useEffect(() => {
-    api.health()
+    api
+      .health()
       .then(() => setBackendOnline(true))
       .catch(() => setBackendOnline(false));
   }, []);
@@ -35,13 +36,15 @@ export function useSimulator() {
       api.getProtocols(),
       api.getSendModes(),
       api.getDefaults(),
-    ]).then(([dt, sc, pr, sm, def]) => {
-      setDeviceTypes(dt);
-      setScenarios(sc);
-      setProtocols(pr);
-      setSendModes(sm);
-      setDefaults(def);
-    }).catch(console.error);
+    ])
+      .then(([dt, sc, pr, sm, def]) => {
+        setDeviceTypes(dt);
+        setScenarios(sc);
+        setProtocols(pr);
+        setSendModes(sm);
+        setDefaults(def);
+      })
+      .catch(console.error);
   }, []);
 
   // ── Polling ───────────────────────────────────────────────────────────
@@ -51,7 +54,7 @@ export function useSimulator() {
       try {
         const s = await api.getStatus(id);
         setStatus(s);
-        setLoading(false);  // first successful poll clears the "starting" spinner
+        setLoading(false); // first successful poll clears the "starting" spinner
         if (!s.running) stopPolling();
       } catch {
         // backend may have restarted; keep polling
@@ -69,19 +72,22 @@ export function useSimulator() {
   useEffect(() => () => stopPolling(), [stopPolling]);
 
   // ── Actions ───────────────────────────────────────────────────────────
-  const start = useCallback(async (config: SessionConfig) => {
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await api.startSession(config);
-      setSessionId(res.session_id);
-      startPolling(res.session_id);
-      // loading stays true until the first poll clears it
-    } catch (e: any) {
-      setError(e.message ?? 'Failed to start session');
-      setLoading(false);
-    }
-  }, [startPolling]);
+  const start = useCallback(
+    async (config: SessionConfig) => {
+      setLoading(true);
+      setError(null);
+      try {
+        const res = await api.startSession(config);
+        setSessionId(res.session_id);
+        startPolling(res.session_id);
+        // loading stays true until the first poll clears it
+      } catch (e: any) {
+        setError(e.message ?? 'Failed to start session');
+        setLoading(false);
+      }
+    },
+    [startPolling],
+  );
 
   const stop = useCallback(async () => {
     if (!sessionId) return;

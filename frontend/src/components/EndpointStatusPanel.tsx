@@ -33,7 +33,7 @@ export function EndpointStatusPanel({ endpoints }: Props) {
     <div style={styles.panel}>
       <div style={styles.panelTitle}>Endpoint Status</div>
       <div style={styles.grid}>
-        {endpoints.map(ep => (
+        {endpoints.map((ep) => (
           <EndpointCard key={ep.name} ep={ep} />
         ))}
       </div>
@@ -46,7 +46,7 @@ function EndpointCard({ ep }: { ep: EndpointStatus }) {
   const total = ep.success_count + ep.error_count;
   const successRate = total > 0 ? (ep.success_count / total) * 100 : 100;
   const color = PROTOCOL_COLORS[ep.protocol];
-  const errors = (ep.recent_errors ?? []).filter(e => e.message !== 'unknown error');
+  const errors = (ep.recent_errors ?? []).filter((e) => e.message !== 'unknown error');
 
   return (
     <div style={styles.card}>
@@ -54,7 +54,9 @@ function EndpointCard({ ep }: { ep: EndpointStatus }) {
         <span style={styles.epIcon}>{PROTOCOL_ICONS[ep.protocol]}</span>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={styles.epName}>{ep.name}</div>
-          <div style={styles.epUrl} title={ep.url}>{ep.url}</div>
+          <div style={styles.epUrl} title={ep.url}>
+            {ep.url}
+          </div>
         </div>
         <span style={{ ...styles.protocolTag, borderColor: color, color }}>
           {ep.protocol.toUpperCase()}
@@ -63,7 +65,11 @@ function EndpointCard({ ep }: { ep: EndpointStatus }) {
 
       <div style={styles.metrics}>
         <Metric label="Success" value={ep.success_count.toLocaleString()} color="#4ade80" />
-        <Metric label="Errors"  value={ep.error_count.toLocaleString()}  color={ep.error_count > 0 ? '#f87171' : '#475569'} />
+        <Metric
+          label="Errors"
+          value={ep.error_count.toLocaleString()}
+          color={ep.error_count > 0 ? '#f87171' : '#475569'}
+        />
         <Metric label="Avg Latency" value={`${ep.avg_latency_ms.toFixed(1)} ms`} color="#60a5fa" />
         <Metric
           label="Success Rate"
@@ -73,11 +79,13 @@ function EndpointCard({ ep }: { ep: EndpointStatus }) {
       </div>
 
       <div style={styles.progressTrack}>
-        <div style={{
-          ...styles.progressFill,
-          width: `${successRate}%`,
-          background: successRate > 95 ? '#4ade80' : successRate > 80 ? '#f59e0b' : '#f87171',
-        }} />
+        <div
+          style={{
+            ...styles.progressFill,
+            width: `${successRate}%`,
+            background: successRate > 95 ? '#4ade80' : successRate > 80 ? '#f59e0b' : '#f87171',
+          }}
+        />
       </div>
 
       {ep.last_status_code !== null && ep.protocol === 'http' && (
@@ -86,8 +94,10 @@ function EndpointCard({ ep }: { ep: EndpointStatus }) {
 
       {errors.length > 0 && (
         <div>
-          <button style={styles.errToggle} onClick={() => setErrorsOpen(o => !o)}>
-            <span style={{ color: '#f87171' }}>✕ {errors.length} error{errors.length !== 1 ? 's' : ''}</span>
+          <button style={styles.errToggle} onClick={() => setErrorsOpen((o) => !o)}>
+            <span style={{ color: '#f87171' }}>
+              ✕ {errors.length} error{errors.length !== 1 ? 's' : ''}
+            </span>
             <span style={styles.errToggleArrow}>{errorsOpen ? '▲' : '▼'}</span>
           </button>
           {errorsOpen && <ErrorTable errors={errors} />}
@@ -108,14 +118,32 @@ function ErrorTable({ errors }: { errors: EndpointError[] }) {
       {[...errors].reverse().map((e, i) => {
         const ok = e.status_code !== null && e.status_code < 400;
         const codeColor = e.status_code === null ? '#64748b' : ok ? '#4ade80' : '#f87171';
-        const time = new Date(e.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        const time = new Date(e.timestamp).toLocaleTimeString([], {
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit',
+        });
         return (
-          <div key={i} style={{ ...styles.errRow, background: i % 2 === 0 ? 'transparent' : '#0a0e16' }}>
-            <span style={{ ...styles.errCell, flex: '0 0 70px', color: codeColor, fontWeight: 600 }}>
+          <div
+            key={i}
+            style={{ ...styles.errRow, background: i % 2 === 0 ? 'transparent' : '#0a0e16' }}
+          >
+            <span
+              style={{ ...styles.errCell, flex: '0 0 70px', color: codeColor, fontWeight: 600 }}
+            >
               {e.status_code ?? 'ERR'}
             </span>
             <span style={{ ...styles.errCell, flex: '0 0 80px', color: '#475569' }}>{time}</span>
-            <span style={{ ...styles.errCell, flex: 1, color: '#94a3b8', wordBreak: 'break-word' as const }}>{e.message}</span>
+            <span
+              style={{
+                ...styles.errCell,
+                flex: 1,
+                color: '#94a3b8',
+                wordBreak: 'break-word' as const,
+              }}
+            >
+              {e.message}
+            </span>
           </div>
         );
       })}
@@ -129,7 +157,14 @@ function Metric({ label, value, color }: { label: string; value: string; color: 
       <div style={{ fontSize: 14, fontWeight: 700, color, fontVariantNumeric: 'tabular-nums' }}>
         {value}
       </div>
-      <div style={{ fontSize: 10, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+      <div
+        style={{
+          fontSize: 10,
+          color: '#475569',
+          textTransform: 'uppercase',
+          letterSpacing: '0.06em',
+        }}
+      >
         {label}
       </div>
     </div>
