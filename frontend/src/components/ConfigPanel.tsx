@@ -43,6 +43,7 @@ export function ConfigPanel({
   onStart, onStop, onStopAll, isRunning, loading,
 }: Props) {
   const [cfg, setCfg] = useState<SessionConfig>(DEFAULT_CONFIG);
+  const [validationError, setValidationError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!defaults) return;
@@ -85,9 +86,15 @@ export function ConfigPanel({
     });
 
   const handleStart = () => {
+    const enabledEndpoints = cfg.endpoints.filter(e => e.enabled);
+    if (enabledEndpoints.length === 0) {
+      setValidationError('At least one enabled endpoint is required.');
+      return;
+    }
+    setValidationError(null);
     const config: SessionConfig = {
       ...cfg,
-      protocols: [...new Set(cfg.endpoints.filter(e => e.enabled).map(e => e.protocol))],
+      protocols: [...new Set(enabledEndpoints.map(e => e.protocol))],
     };
     onStart(config);
   };
@@ -287,12 +294,15 @@ export function ConfigPanel({
       </Section>
 
       {/* ── Controls ── */}
+      {validationError && (
+        <div style={styles.validationError}>{validationError}</div>
+      )}
       <div style={styles.controls}>
         {!isRunning ? (
           <button
             style={{ ...styles.ctrlBtn, ...styles.startBtn }}
             onClick={handleStart}
-            disabled={loading || cfg.devices.length === 0}
+            disabled={loading || cfg.devices.length === 0 || cfg.endpoints.filter(e => e.enabled).length === 0}
           >
             {loading ? '⏳ Starting…' : '▶ Start Simulation'}
           </button>
@@ -506,6 +516,15 @@ const styles: Record<string, React.CSSProperties> = {
   stopAllBtn: {
     flex: 0.4, background: '#1a1f2e', color: '#64748b',
     border: '1px solid #2a3040', fontSize: 12,
+  },
+  validationError: {
+    background: '#2d1515',
+    border: '1px solid #7f1d1d',
+    color: '#f87171',
+    borderRadius: 6,
+    padding: '8px 12px',
+    fontSize: 12,
+    marginBottom: 4,
   },
   countWrap: { display: 'flex', flexDirection: 'column', gap: 2 },
   endpointModeRow: {
