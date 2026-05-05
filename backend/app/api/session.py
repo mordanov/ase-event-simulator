@@ -73,6 +73,9 @@ class Session:
         self._rec_log: deque[RecommendationLog] = deque(maxlen=MAX_REC_LOG)
         self._rec_client: Optional[httpx.AsyncClient] = None
 
+        # Devices disabled via the rules engine — skip sending events for these
+        self._disabled_device_ids: set[str] = set()
+
         # Unified activity log (all backend calls)
         self._activity_log: deque[ActivityEvent] = deque(maxlen=MAX_ACTIVITY_LOG)
 
@@ -345,6 +348,16 @@ class Session:
                             "credits_spent": balance_before - balance_after,
                         },
                     ))
+                elif resp.status_code == 403:
+                    self._disabled_device_ids.add(device_id)
+                    ts_rec = datetime.now(timezone.utc).isoformat()
+                    self._activity_log.append(ActivityEvent(
+                        timestamp=ts_rec,
+                        event_type="recommendation",
+                        device_id=device_id,
+                        status="disabled",
+                        data={"error": "DEVICE_DISABLED"},
+                    ))
                 else:
                     ts_rec = datetime.now(timezone.utc).isoformat()
                     self._rec_log.append(RecommendationLog(
@@ -410,14 +423,30 @@ class Session:
                 if isinstance(t, HTTPTransport):
                     t.last_credit_results.clear()
 
-            # Generate ONE event per device (protocol = primary transport)
+            # Log and skip disabled devices
+            _ts_dis = datetime.now(timezone.utc).isoformat()
+            active_indices = []
+            for _i in range(device_count):
+                _did = self._generator.devices[_i]["device_id"]
+                if _did in self._disabled_device_ids:
+                    self._activity_log.append(ActivityEvent(
+                        timestamp=_ts_dis,
+                        event_type="telemetry",
+                        device_id=_did,
+                        status="disabled",
+                        data={"reason": "Device is disabled — event skipped"},
+                    ))
+                else:
+                    active_indices.append(_i)
+
+            # Generate ONE event per active device (protocol = primary transport)
             base_events: list[TelemetryEvent] = [
                 self._generator.generate_event(
                     scenario=self.config.scenario,
                     protocol=primary_protocol,
                     device_index=i,
                 )
-                for i in range(device_count)
+                for i in active_indices
             ]
 
             self._events_generated += len(base_events)
@@ -464,10 +493,14 @@ class Session:
                         sent += 1
                     else:
                         self._events_failed += 1
+                    body = r.get("body") or {}
+                    if isinstance(body, dict):
+                        for _did in body.get("device_disabled_ids", []):
+                            self._disabled_device_ids.add(_did)
                     event_responses[event.event_id].append({
                         "name": transport.endpoint.name,
                         "status_code": r.get("status_code"),
-                        "body": r.get("body"),
+                        "body": body,
                         "error": r.get("error"),
                     })
 
@@ -517,6 +550,22 @@ class Session:
                 if isinstance(t, HTTPTransport):
                     t.last_credit_results.clear()
 
+            # Log and skip disabled devices
+            _ts_dis = datetime.now(timezone.utc).isoformat()
+            active_indices = []
+            for _i in range(device_count):
+                _did = self._generator.devices[_i]["device_id"]
+                if _did in self._disabled_device_ids:
+                    self._activity_log.append(ActivityEvent(
+                        timestamp=_ts_dis,
+                        event_type="telemetry",
+                        device_id=_did,
+                        status="disabled",
+                        data={"reason": "Device is disabled — event skipped"},
+                    ))
+                else:
+                    active_indices.append(_i)
+
             # Generate ONE set of events (same event_id/metrics across all transports)
             base_events: list[TelemetryEvent] = [
                 self._generator.generate_event(
@@ -524,7 +573,7 @@ class Session:
                     protocol=primary_protocol,
                     device_index=i,
                 )
-                for i in range(n)
+                for i in active_indices[:n]
             ]
             self._events_generated += len(base_events)
             self._anomalies += sum(1 for e in base_events if e.is_anomaly)
@@ -587,10 +636,14 @@ class Session:
                         self._batches_sent += 1
                     else:
                         self._events_failed += len(batch.events)
+                    _body = result.get("body") or {}
+                    if isinstance(_body, dict):
+                        for _did in _body.get("device_disabled_ids", []):
+                            self._disabled_device_ids.add(_did)
                     r_entry = {
                         "name": transport.endpoint.name,
                         "status_code": result.get("status_code"),
-                        "body": result.get("body"),
+                        "body": _body,
                         "error": result.get("error"),
                     }
                 for event in batch.events:
