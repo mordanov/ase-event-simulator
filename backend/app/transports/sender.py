@@ -546,8 +546,9 @@ class LocalMqttTransport(BaseTransport):
         return await self._publish(event.model_dump_json(), event.device_id)
 
     async def send_batch(self, batch: BatchPayload) -> SendResult:
-        device_id = batch.events[0].device_id if batch.events else "batch"
-        return await self._publish(batch.model_dump_json(), device_id)
+        results = [await self.send_event(ev) for ev in batch.events]
+        ok = all(r.get("ok", False) for r in results)
+        return {"ok": ok, "status_code": None, "body": None, "error": None}
 
     async def _publish(self, payload: str, device_id: str) -> SendResult:
         t0 = time.perf_counter()
