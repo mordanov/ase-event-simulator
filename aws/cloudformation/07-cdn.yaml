@@ -54,6 +54,22 @@ Parameters:
       ACM certificate ARN for IngestionPipelineDomain (from 06-acm stack,
       must be in us-east-1).
 
+  WildcardCertificateArn:
+    Type: String
+    Description: >
+      ACM wildcard certificate ARN for *.aleksandr-mordanov.click (from 06-acm stack,
+      must be in us-east-1). Used by Grafana and Prometheus distributions.
+
+  GrafanaDomain:
+    Type: String
+    Default: "grafana.aleksandr-mordanov.click"
+    Description: Public hostname for the Grafana CloudFront distribution.
+
+  PrometheusDomain:
+    Type: String
+    Default: "prometheus.aleksandr-mordanov.click"
+    Description: Public hostname for the Prometheus CloudFront distribution.
+
   PriceClass:
     Type: String
     Default: PriceClass_100
@@ -218,8 +234,8 @@ Resources:
         EvaluateTargetHealth: false
 
   # ── Ingestion pipeline CloudFront distribution ────────────────────────────
-  # Three origins on the same EC2 Elastic IP, each on a different port.
-  # Services must be configured for sub-path serving — see docker-compose notes.
+  # Serves only the platform admin frontend (port 3200).
+  # Grafana and Prometheus each have their own distributions below.
 
   IngestionCloudFrontDistribution:
     Type: AWS::CloudFront::Distribution
@@ -238,31 +254,14 @@ Resources:
           MinimumProtocolVersion: TLSv1.2_2021
 
         Origins:
-          # Grafana dashboard — docker-compose port 3100
-          - Id: ingestion-grafana
-            DomainName: !Ref IngestionPipelineIp
-            CustomOriginConfig:
-              HTTPPort: 3100
-              HTTPSPort: 443
-              OriginProtocolPolicy: http-only
-
-          # Prometheus metrics — docker-compose port 9090
-          - Id: ingestion-prometheus
-            DomainName: !Ref IngestionPipelineIp
-            CustomOriginConfig:
-              HTTPPort: 9090
-              HTTPSPort: 443
-              OriginProtocolPolicy: http-only
-
           # Platform admin frontend — docker-compose port 3200
           - Id: ingestion-platform
-            DomainName: !Ref IngestionPipelineIp
+            DomainName: !Sub "origin.${IngestionPipelineDomain}"
             CustomOriginConfig:
               HTTPPort: 3200
               HTTPSPort: 443
               OriginProtocolPolicy: http-only
 
-        # Default: serve the platform admin frontend
         DefaultCacheBehavior:
           TargetOriginId: ingestion-platform
           ViewerProtocolPolicy: redirect-to-https
@@ -280,59 +279,103 @@ Resources:
           # Managed-AllViewerExceptHostHeader
           OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
 
-        CacheBehaviors:
-          # /grafana* → Grafana (port 3100)
-          # Requires in docker-compose:
-          #   GF_SERVER_ROOT_URL=https://ingestion-pipeline.aleksandr-mordanov.click/grafana
-          #   GF_SERVER_SERVE_FROM_SUB_PATH=true
-          - PathPattern: "/grafana*"
-            TargetOriginId: ingestion-grafana
-            ViewerProtocolPolicy: redirect-to-https
-            AllowedMethods:
-              - GET
-              - HEAD
-              - OPTIONS
-              - PUT
-              - POST
-              - PATCH
-              - DELETE
-            CachedMethods: [GET, HEAD]
-            # Managed-CachingDisabled
-            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
-            # Managed-AllViewerExceptHostHeader
-            OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
+  # ── Grafana CloudFront distribution ──────────────────────────────────────
+  # grafana.aleksandr-mordanov.click → EC2:3100
+  # docker-compose: GF_SERVER_ROOT_URL=https://grafana.aleksandr-mordanov.click
 
-          # /prometheus* → Prometheus (port 9090)
-          # Requires in docker-compose command:
-          #   --web.external-url=/prometheus/
-          #   --web.route-prefix=/prometheus
-          - PathPattern: "/prometheus*"
-            TargetOriginId: ingestion-prometheus
-            ViewerProtocolPolicy: redirect-to-https
-            AllowedMethods: [GET, HEAD, OPTIONS]
-            CachedMethods: [GET, HEAD]
-            # Managed-CachingDisabled
-            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
-            # Managed-AllViewerExceptHostHeader
-            OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
+  GrafanaCloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    DependsOn: IngestionOriginDNSRecord
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Sub "Grafana - ${GrafanaDomain}"
+        Aliases:
+          - !Ref GrafanaDomain
+        PriceClass: !Ref PriceClass
+        HttpVersion: http2and3
 
-          # /platform* → Platform admin frontend (port 3200)
-          - PathPattern: "/platform*"
-            TargetOriginId: ingestion-platform
-            ViewerProtocolPolicy: redirect-to-https
-            AllowedMethods:
-              - GET
-              - HEAD
-              - OPTIONS
-              - PUT
-              - POST
-              - PATCH
-              - DELETE
-            CachedMethods: [GET, HEAD]
-            # Managed-CachingDisabled
-            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
-            # Managed-AllViewerExceptHostHeader
-            OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
+        ViewerCertificate:
+          AcmCertificateArn: !Ref WildcardCertificateArn
+          SslSupportMethod: sni-only
+          MinimumProtocolVersion: TLSv1.2_2021
+
+        Origins:
+          - Id: grafana-ec2
+            DomainName: !Sub "origin.${IngestionPipelineDomain}"
+            CustomOriginConfig:
+              HTTPPort: 3100
+              HTTPSPort: 443
+              OriginProtocolPolicy: http-only
+
+        DefaultCacheBehavior:
+          TargetOriginId: grafana-ec2
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
+            - PUT
+            - POST
+            - PATCH
+            - DELETE
+          CachedMethods: [GET, HEAD]
+          # Managed-CachingDisabled
+          CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+          # Managed-AllViewerExceptHostHeader
+          OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
+
+  # ── Prometheus CloudFront distribution ───────────────────────────────────
+  # prometheus.aleksandr-mordanov.click → EC2:9090
+  # docker-compose command: no --web.external-url flag needed (served at root)
+
+  PrometheusCloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    DependsOn: IngestionOriginDNSRecord
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Sub "Prometheus - ${PrometheusDomain}"
+        Aliases:
+          - !Ref PrometheusDomain
+        PriceClass: !Ref PriceClass
+        HttpVersion: http2and3
+
+        ViewerCertificate:
+          AcmCertificateArn: !Ref WildcardCertificateArn
+          SslSupportMethod: sni-only
+          MinimumProtocolVersion: TLSv1.2_2021
+
+        Origins:
+          - Id: prometheus-ec2
+            DomainName: !Sub "origin.${IngestionPipelineDomain}"
+            CustomOriginConfig:
+              HTTPPort: 9090
+              HTTPSPort: 443
+              OriginProtocolPolicy: http-only
+
+        DefaultCacheBehavior:
+          TargetOriginId: prometheus-ec2
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD, OPTIONS]
+          CachedMethods: [GET, HEAD]
+          # Managed-CachingDisabled
+          CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+          # Managed-AllViewerExceptHostHeader
+          OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
+
+  # ── Route 53 A record — EC2 origin hostname (CloudFront cannot use raw IPs) ─
+  # Creates origin.ingestion-pipeline.… → Elastic IP, used as CloudFront origin.
+
+  IngestionOriginDNSRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Sub "origin.${IngestionPipelineDomain}"
+      Type: A
+      TTL: "300"
+      ResourceRecords:
+        - !Ref IngestionPipelineIp
 
   # ── Route 53 A record — alias to ingestion pipeline CloudFront ───────────
 
@@ -345,6 +388,32 @@ Resources:
       AliasTarget:
         HostedZoneId: Z2FDTNDATAQYW2
         DNSName: !GetAtt IngestionCloudFrontDistribution.DomainName
+        EvaluateTargetHealth: false
+
+  # ── Route 53 A record — alias to Grafana CloudFront ──────────────────────
+
+  GrafanaDNSRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref GrafanaDomain
+      Type: A
+      AliasTarget:
+        HostedZoneId: Z2FDTNDATAQYW2
+        DNSName: !GetAtt GrafanaCloudFrontDistribution.DomainName
+        EvaluateTargetHealth: false
+
+  # ── Route 53 A record — alias to Prometheus CloudFront ───────────────────
+
+  PrometheusDNSRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref PrometheusDomain
+      Type: A
+      AliasTarget:
+        HostedZoneId: Z2FDTNDATAQYW2
+        DNSName: !GetAtt PrometheusCloudFrontDistribution.DomainName
         EvaluateTargetHealth: false
 
 # ─── Outputs ──────────────────────────────────────────────────────────────────
@@ -372,7 +441,19 @@ Outputs:
       Name: !Sub "${AWS::StackName}:SiteURL"
 
   IngestionPipelineURL:
-    Description: Public URL of the ingestion pipeline.
-    Value: !Sub "http://${IngestionPipelineDomain}:9000"
+    Description: Public URL of the ingestion pipeline admin frontend.
+    Value: !Sub "https://${IngestionPipelineDomain}"
     Export:
       Name: !Sub "${AWS::StackName}:IngestionPipelineURL"
+
+  GrafanaURL:
+    Description: Public URL of Grafana.
+    Value: !Sub "https://${GrafanaDomain}"
+    Export:
+      Name: !Sub "${AWS::StackName}:GrafanaURL"
+
+  PrometheusURL:
+    Description: Public URL of Prometheus.
+    Value: !Sub "https://${PrometheusDomain}"
+    Export:
+      Name: !Sub "${AWS::StackName}:PrometheusURL"

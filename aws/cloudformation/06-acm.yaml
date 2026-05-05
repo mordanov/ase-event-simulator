@@ -23,6 +23,13 @@ Parameters:
       A separate ACM certificate is required because CloudFront validates the
       certificate CN/SAN against the distribution alias.
 
+  WildcardDomainName:
+    Type: String
+    Default: "*.aleksandr-mordanov.click"
+    Description: >
+      Wildcard certificate covering all first-level subdomains (grafana, prometheus, etc.).
+      Shared across multiple CloudFront distributions.
+
   HostedZoneId:
     Type: String
     Description: >
@@ -51,6 +58,15 @@ Resources:
         - DomainName: !Ref IngestionDomainName
           HostedZoneId: !Ref HostedZoneId
 
+  WildcardCertificate:
+    Type: AWS::CertificateManager::Certificate
+    Properties:
+      DomainName: !Ref WildcardDomainName
+      ValidationMethod: DNS
+      DomainValidationOptions:
+        - DomainName: !Ref WildcardDomainName
+          HostedZoneId: !Ref HostedZoneId
+
 # ─── Outputs ──────────────────────────────────────────────────────────────────
 
 Outputs:
@@ -66,3 +82,9 @@ Outputs:
     Value: !Ref IngestionCertificate
     Export:
       Name: !Sub "${AWS::StackName}:IngestionCertificateArn"
+
+  WildcardCertificateArn:
+    Description: ARN of the wildcard ACM certificate for *.aleksandr-mordanov.click (pass to 07-cdn.yaml as WildcardCertificateArn).
+    Value: !Ref WildcardCertificate
+    Export:
+      Name: !Sub "${AWS::StackName}:WildcardCertificateArn"

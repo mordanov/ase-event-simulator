@@ -363,6 +363,10 @@ else
 
   CERT_ARN=$(ACM CertificateArn)
   INGESTION_CERT_ARN=$(ACM IngestionCertificateArn)
+  WILDCARD_CERT_ARN=$(ACM WildcardCertificateArn)
+
+  [[ -z "$WILDCARD_CERT_ARN" || "$WILDCARD_CERT_ARN" == "None" ]] && \
+    error "WildcardCertificateArn not found in ACM stack — redeploy 06-acm first (SKIP_ACM=0 SKIP_CDN=1)"
 
   aws cloudformation deploy \
     --template-file "$CF_DIR/07-cdn.yaml" \
@@ -377,6 +381,7 @@ else
         FrontendBucketArn="$FRONTEND_BUCKET_ARN" \
         IngestionPipelineIp="$INGESTION_PIPELINE_IP" \
         IngestionCertificateArn="$INGESTION_CERT_ARN" \
+        WildcardCertificateArn="$WILDCARD_CERT_ARN" \
     --no-fail-on-empty-changeset
   success "CDN stack deployed: $STACK_CDN"
 
@@ -443,8 +448,8 @@ echo -e "  Ingestion pipeline : ${CYAN}http://${INGESTION_PIPELINE_HOST}:9000${N
 echo -e "  MQTT broker        : ${CYAN}${INGESTION_MQTT_URL}${NC}"
 [[ -n "$DOMAIN_NAME" ]] && echo -e "  Site URL           : ${CYAN}https://${DOMAIN_NAME}${NC}"
 [[ -n "$INGESTION_PIPELINE_IP" ]] && echo -e "  Ingestion CDN      : ${CYAN}https://ingestion-pipeline.aleksandr-mordanov.click${NC}"
-[[ -n "$INGESTION_PIPELINE_IP" ]] && echo -e "  Grafana            : ${CYAN}https://ingestion-pipeline.aleksandr-mordanov.click/grafana${NC}"
-[[ -n "$INGESTION_PIPELINE_IP" ]] && echo -e "  Prometheus         : ${CYAN}https://ingestion-pipeline.aleksandr-mordanov.click/prometheus${NC}"
+[[ -n "$INGESTION_PIPELINE_IP" ]] && echo -e "  Grafana            : ${CYAN}https://grafana.aleksandr-mordanov.click${NC}"
+[[ -n "$INGESTION_PIPELINE_IP" ]] && echo -e "  Prometheus         : ${CYAN}https://prometheus.aleksandr-mordanov.click${NC}"
 echo ""
 echo -e "  GitHub Actions secrets to configure:"
 echo -e "  ${YELLOW}AWS_REGION=${REGION}${NC}"
