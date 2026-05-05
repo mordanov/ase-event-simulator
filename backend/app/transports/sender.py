@@ -140,7 +140,7 @@ class HTTPTransport(BaseTransport):
         except Exception:
             return None
 
-        if response.status_code == 200 and body:
+        if response.status_code < 400 and body:
             self.last_credit_results.extend(body.get("credit_results", []))
         return body
 
