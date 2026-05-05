@@ -264,7 +264,7 @@ Resources:
             - Name: LOG_LEVEL
               Value: info
             - Name: SIMULATOR_CLOUD_MODE
-              Value: "true"
+              Value: "false"
             - Name: SEED_DEVICE_COUNT
               Value: !Sub "${SeedDeviceCount}"
             - Name: DATABASE_URL
