@@ -27,7 +27,7 @@ Parameters:
 
   BackendAlbDns:
     Type: String
-    Description: ALB DNS name from 02-platform stack (ALBDNSName output).
+    Description: ALB DNS name from 04-platform stack (ALBDNSName output).
 
   FrontendBucketName:
     Type: String

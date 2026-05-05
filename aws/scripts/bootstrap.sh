@@ -3,11 +3,14 @@
 # Health Telemetry Simulator — AWS Bootstrap
 #
 # Deploys the full AWS infrastructure in dependency order:
-#   00-buckets  → S3 deployment + frontend buckets
-#   01-jitr     → IoT CA registration + JITR Lambda
-#   02-platform → VPC, ECR, ECS Fargate, RDS PostgreSQL, ALB
-#   03-acm      → ACM TLS certificate (always deployed to us-east-1)
-#   04-cdn      → CloudFront distribution + Route 53 DNS record
+#   00-buckets    → S3 deployment + frontend buckets
+#   01-jitr       → IoT CA registration + JITR Lambda
+#   02-network    → VPC, subnets, security groups
+#   03-persistent → ECR repository
+#   04-platform   → ALB, ECS cluster + task definition (SQLite — no RDS needed)
+#   05-service    → ECS Fargate service
+#   06-acm        → ACM TLS certificate (always deployed to us-east-1)
+#   07-cdn        → CloudFront distribution + Route 53 DNS record
 #
 # Prerequisites:
 #   aws CLI, docker, python3, pip3, openssl, zip, jq

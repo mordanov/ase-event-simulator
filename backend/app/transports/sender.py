@@ -480,12 +480,63 @@ class GRPCMockTransport(BaseTransport):
         return {"ok": ok, "status_code": code, "body": None, "error": None}
 
 
+# ─── Local plain-MQTT transport ──────────────────────────────────────────────
+
+class LocalMqttTransport(BaseTransport):
+    """Plain MQTT (no TLS) transport for local brokers such as Mosquitto.
+
+    Used when the broker URL does not match the AWS IoT Core hostname pattern.
+    Publishes each event as a JSON payload to `<topic_prefix>/<device_id>`.
+    """
+    protocol = TransportProtocol.MQTT
+
+    def __init__(self, endpoint: EndpointConfig):
+        super().__init__(endpoint)
+        parsed = urlparse(endpoint.url)
+        self._host = parsed.hostname or "localhost"
+        self._port = parsed.port or 1883
+        self._topic_prefix = os.getenv("DEFAULT_MQTT_TOPIC", "health/telemetry")
+
+    async def send_event(self, event: TelemetryEvent) -> SendResult:
+        return await self._publish(event.model_dump_json(), event.device_id)
+
+    async def send_batch(self, batch: BatchPayload) -> SendResult:
+        device_id = batch.events[0].device_id if batch.events else "batch"
+        return await self._publish(batch.model_dump_json(), device_id)
+
+    async def _publish(self, payload: str, device_id: str) -> SendResult:
+        t0 = time.perf_counter()
+        try:
+            import aiomqtt
+            topic = f"{self._topic_prefix}/{device_id}"
+            async with aiomqtt.Client(hostname=self._host, port=self._port) as client:
+                await client.publish(topic, payload.encode(), qos=1)
+            latency = (time.perf_counter() - t0) * 1000
+            self._record(latency, True)
+            logger.debug("MQTT publish → %s (%d bytes)", topic, len(payload))
+            return {"ok": True, "status_code": None, "body": None, "error": None}
+        except Exception as exc:
+            latency = (time.perf_counter() - t0) * 1000
+            self._record(latency, False, err=str(exc))
+            logger.warning("MQTT publish failed [%s]: %s", device_id, exc)
+            return {"ok": False, "status_code": None, "body": None, "error": str(exc)}
+
+
 # ─── Factory ──────────────────────────────────────────────────────────────────
 
+_AWS_IOT_HOST_PATTERN = ".iot."
+
+
 def make_transport(endpoint: EndpointConfig) -> BaseTransport:
+    if endpoint.protocol == TransportProtocol.MQTT:
+        parsed = urlparse(endpoint.url)
+        host = parsed.hostname or ""
+        # Route to AWS IoT transport only for real AWS IoT Core endpoints
+        cls = AWSIoTMQTTTransport if _AWS_IOT_HOST_PATTERN in host and "amazonaws.com" in host else LocalMqttTransport
+        return cls(endpoint)
+
     mapping = {
         TransportProtocol.HTTP:      HTTPTransport,
-        TransportProtocol.MQTT:      AWSIoTMQTTTransport,
         TransportProtocol.WEBSOCKET: WebSocketMockTransport,
         TransportProtocol.GRPC:      GRPCMockTransport,
     }
