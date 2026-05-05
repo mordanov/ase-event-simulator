@@ -9,7 +9,6 @@
 #   04-platform   → ALB, ECS cluster, task definition
 #   03-persistent → ECR (images deleted first)
 #   02-network    → VPC, subnets, security groups
-#   01-jitr       → JITR Lambda, IoT Rule, Thing Type
 #   00-buckets    → S3 buckets (emptied first, then deleted)
 #
 # Usage — same env vars as bootstrap.sh:
@@ -40,7 +39,6 @@ REGION="${REGION:-${AWS_DEFAULT_REGION:-us-west-2}}"
 PROJECT_NAME="${PROJECT_NAME:-health-simulator}"
 
 STACK_BUCKETS="${STACK_BUCKETS:-${PROJECT_NAME}-buckets}"
-STACK_JITR="${STACK_JITR:-${PROJECT_NAME}-jitr}"
 STACK_NETWORK="${STACK_NETWORK:-${PROJECT_NAME}-network}"
 STACK_PERSISTENT="${STACK_PERSISTENT:-${PROJECT_NAME}-persistent}"
 STACK_PLATFORM="${STACK_PLATFORM:-${PROJECT_NAME}-platform}"
@@ -54,7 +52,6 @@ SKIP_SERVICE="${SKIP_SERVICE:-0}"
 SKIP_PLATFORM="${SKIP_PLATFORM:-0}"
 SKIP_PERSISTENT="${SKIP_PERSISTENT:-0}"
 SKIP_NETWORK="${SKIP_NETWORK:-0}"
-SKIP_JITR="${SKIP_JITR:-0}"
 SKIP_BUCKETS="${SKIP_BUCKETS:-0}"
 
 DRY_RUN="${DRY_RUN:-0}"
@@ -113,7 +110,6 @@ delete_stack() {
   fi
 }
 
-# Empty a versioned S3 bucket (handles pagination automatically).
 empty_bucket() {
   local bucket="$1"
   if ! aws s3api head-bucket --bucket "$bucket" --region "$REGION" 2>/dev/null; then
@@ -175,7 +171,7 @@ echo -e "${RED} WARNING: This will permanently delete all simulator resources${N
 echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
 echo -e "  Stacks to delete : ${YELLOW}${STACK_CDN}, ${STACK_ACM} (us-east-1), ${STACK_SERVICE},${NC}"
-echo -e "                     ${YELLOW}${STACK_PLATFORM}, ${STACK_PERSISTENT}, ${STACK_NETWORK}, ${STACK_JITR}, ${STACK_BUCKETS}${NC}"
+echo -e "                     ${YELLOW}${STACK_PLATFORM}, ${STACK_PERSISTENT}, ${STACK_NETWORK}, ${STACK_BUCKETS}${NC}"
 echo -e "  ECR repository   : ${YELLOW}${PROJECT_NAME}-backend${NC} (images deleted, then repo)"
 echo -e "  S3 buckets       : ${YELLOW}${PROJECT_NAME}-deploy-${ACCOUNT_ID}-${REGION}${NC}"
 echo -e "                     ${YELLOW}${PROJECT_NAME}-frontend-${ACCOUNT_ID}-${REGION}${NC}"
@@ -214,7 +210,6 @@ if [[ "$SKIP_SERVICE" == "1" ]]; then
 else
   step "ECS Service (05-service)"
 
-  # Scale to 0 before deleting so CloudFormation doesn't time out draining tasks.
   ECS_CLUSTER=$(stack_output "$STACK_PLATFORM" "ECSClusterName")
   ECS_SERVICE=$(stack_output "$STACK_SERVICE"  "ECSServiceName")
 
@@ -247,21 +242,20 @@ if [[ "$SKIP_PLATFORM" == "1" ]]; then
 else
   step "Platform — ALB / ECS cluster / task definition (04-platform)"
 
-  # Force-delete Secrets Manager secrets immediately (no 30-day recovery window).
-  for SECRET_ID in "/${PROJECT_NAME}/ca-cert"; do
-    if aws secretsmanager describe-secret \
-        --secret-id "$SECRET_ID" \
-        --region "$REGION" &>/dev/null; then
-      info "Deleting Secrets Manager secret: $SECRET_ID"
-      run aws secretsmanager delete-secret \
-        --secret-id "$SECRET_ID" \
-        --force-delete-without-recovery \
-        --region "$REGION" > /dev/null
-      [[ "$DRY_RUN" != "1" ]] && success "Secret deleted: $SECRET_ID"
-    else
-      warn "Secret $SECRET_ID not found"
-    fi
-  done
+  # Delete the app-config secret created by CloudFormation (no recovery window).
+  APP_CONFIG_SECRET="/${PROJECT_NAME}/app-config-params"
+  if aws secretsmanager describe-secret \
+      --secret-id "$APP_CONFIG_SECRET" \
+      --region "$REGION" &>/dev/null; then
+    info "Deleting Secrets Manager secret: $APP_CONFIG_SECRET"
+    run aws secretsmanager delete-secret \
+      --secret-id "$APP_CONFIG_SECRET" \
+      --force-delete-without-recovery \
+      --region "$REGION" > /dev/null
+    [[ "$DRY_RUN" != "1" ]] && success "Secret deleted: $APP_CONFIG_SECRET"
+  else
+    warn "Secret $APP_CONFIG_SECRET not found"
+  fi
 
   delete_stack "$STACK_PLATFORM" "$REGION"
 fi
@@ -275,7 +269,6 @@ else
 
   ECR_REPO_NAME="${PROJECT_NAME}-backend"
 
-  # Delete ECR images then the repository (DeletionPolicy:Retain, so CF leaves it).
   if aws ecr describe-repositories \
       --repository-names "$ECR_REPO_NAME" --region "$REGION" &>/dev/null; then
     if [[ "$DRY_RUN" != "1" ]]; then
@@ -312,44 +305,7 @@ else
   delete_stack "$STACK_NETWORK" "$REGION"
 fi
 
-# ─── Step 7 — JITR (01-jitr) ─────────────────────────────────────────────────
-
-if [[ "$SKIP_JITR" == "1" ]]; then
-  skip "01-jitr"
-else
-  step "JITR Lambda + IoT Rule (01-jitr)"
-
-  CA_ID_FILE="$PROJECT_ROOT/aws-ca-id.txt"
-  if [[ -f "$CA_ID_FILE" ]]; then
-    CA_ID=$(cat "$CA_ID_FILE")
-    info "Found IoT CA certificate ID: $CA_ID"
-    if [[ "$DRY_RUN" != "1" ]]; then
-      read -r -p "  Deregister and delete this CA certificate? [y/N]: " DEL_CA
-      if [[ "${DEL_CA,,}" == "y" ]]; then
-        aws iot update-ca-certificate \
-          --certificate-id "$CA_ID" \
-          --new-status INACTIVE \
-          --region "$REGION"
-        aws iot delete-ca-certificate \
-          --certificate-id "$CA_ID" \
-          --region "$REGION"
-        success "IoT CA certificate deregistered"
-        rm -f "$CA_ID_FILE"
-      else
-        warn "IoT CA certificate left intact: $CA_ID"
-      fi
-    else
-      dry "aws iot update-ca-certificate --certificate-id $CA_ID --new-status INACTIVE"
-      dry "aws iot delete-ca-certificate  --certificate-id $CA_ID"
-    fi
-  else
-    warn "aws-ca-id.txt not found — IoT CA certificate not managed here (delete manually if needed)"
-  fi
-
-  delete_stack "$STACK_JITR" "$REGION"
-fi
-
-# ─── Step 8 — S3 buckets (00-buckets) ────────────────────────────────────────
+# ─── Step 7 — S3 buckets (00-buckets) ────────────────────────────────────────
 
 if [[ "$SKIP_BUCKETS" == "1" ]]; then
   skip "00-buckets"
@@ -381,6 +337,6 @@ echo -e "${GREEN} Teardown complete${NC}"
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
 echo -e "  Remaining manual cleanup (if any):"
-echo -e "  ${YELLOW}• IoT device certs${NC} — if JITR registered device certs, delete them in IoT Core"
-echo -e "  ${YELLOW}• CloudWatch log groups${NC} — /ecs/${PROJECT_NAME}-backend, /aws/lambda/${STACK_JITR}-jitr"
+echo -e "  ${YELLOW}• CloudWatch log groups${NC} — /ecs/${PROJECT_NAME}-backend"
+echo -e "  ${YELLOW}• Ingestion pipeline${NC} — deployed separately on EC2, not affected"
 echo ""

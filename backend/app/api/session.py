@@ -126,6 +126,7 @@ class Session:
         try:
             await self._run_registration()
             self._registration_phase = False
+            await self._refresh_disabled_devices()
             if self.config.send_mode == SendMode.IMMEDIATE:
                 await self._run_immediate()
             else:
@@ -270,6 +271,38 @@ class Session:
                         seen.add(did)
                         results.append(cr)
         return results
+
+    async def _refresh_disabled_devices(self) -> None:
+        """Poll /api/v1/rules/disabled-devices and update _disabled_device_ids."""
+        from urllib.parse import urlparse as _up
+        rules_base: Optional[str] = None
+        for t in self._transports:
+            if isinstance(t, HTTPTransport):
+                p = _up(t.endpoint.url)
+                rules_base = f"{p.scheme}://{p.netloc}"
+                break
+        if not rules_base:
+            return
+        if self._rec_client is None or self._rec_client.is_closed:
+            self._rec_client = httpx.AsyncClient(timeout=httpx.Timeout(10.0))
+        api_key = os.getenv("INGESTION_API_KEY", "")
+        try:
+            resp = await self._rec_client.get(
+                f"{rules_base}/api/v1/rules/disabled-devices",
+                headers={"X-API-Key": api_key},
+            )
+            if resp.status_code == 200:
+                session_ids = {d["device_id"] for d in self._generator.devices}
+                newly_disabled = []
+                for item in resp.json():
+                    did = item.get("device_id", "")
+                    if did in session_ids and did not in self._disabled_device_ids:
+                        self._disabled_device_ids.add(did)
+                        newly_disabled.append(did)
+                if newly_disabled:
+                    logger.info("disabled_devices_updated", count=len(self._disabled_device_ids), new=newly_disabled)
+        except Exception as exc:
+            logger.debug("disabled_devices_refresh_failed: %s", exc)
 
     async def _maybe_recommend(self, credit_results: list[dict]) -> None:
         """Call the recommendation API for any device whose balance meets the handicap."""
@@ -418,6 +451,8 @@ class Session:
             if self.config.total_events and sent >= self.config.total_events:
                 break
 
+            await self._refresh_disabled_devices()
+
             # Clear accumulated credit results from the previous cycle
             for t in self._transports:
                 if isinstance(t, HTTPTransport):
@@ -431,7 +466,7 @@ class Session:
                 if _did in self._disabled_device_ids:
                     self._activity_log.append(ActivityEvent(
                         timestamp=_ts_dis,
-                        event_type="telemetry",
+                        event_type="disabled",
                         device_id=_did,
                         status="disabled",
                         data={"reason": "Device is disabled — event skipped"},
@@ -539,6 +574,8 @@ class Session:
             if self.config.total_events and total_sent >= self.config.total_events:
                 break
 
+            await self._refresh_disabled_devices()
+
             n = (
                 min(device_count, self.config.total_events - total_sent)
                 if self.config.total_events
@@ -558,7 +595,7 @@ class Session:
                 if _did in self._disabled_device_ids:
                     self._activity_log.append(ActivityEvent(
                         timestamp=_ts_dis,
-                        event_type="telemetry",
+                        event_type="disabled",
                         device_id=_did,
                         status="disabled",
                         data={"reason": "Device is disabled — event skipped"},

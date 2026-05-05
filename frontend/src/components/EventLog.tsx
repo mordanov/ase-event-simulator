@@ -14,6 +14,7 @@ const TYPE_COLORS: Record<string, string> = {
   registration:   '#38bdf8',
   rewards:        '#4ade80',
   recommendation: '#c084fc',
+  disabled:       '#334155',
 };
 
 const STATUS_COLORS: Record<string, string> = {
@@ -23,6 +24,7 @@ const STATUS_COLORS: Record<string, string> = {
   registered: '#38bdf8',
   rejected:   '#f87171',
   pending:    '#fbbf24',
+  disabled:   '#334155',
 };
 
 function getSummary(ev: ActivityEvent): string {
@@ -54,6 +56,8 @@ function getSummary(ev: ActivityEvent): string {
         spent != null && spent > 0 ? `−${spent} credits` : null,
       ].filter(Boolean).join(' · ');
     }
+    case 'disabled':
+      return 'event skipped';
     default:
       return '';
   }
@@ -176,6 +180,17 @@ function EventModalBody({ ev }: { ev: ActivityEvent }) {
         </ModalSection>
       );
 
+    case 'disabled':
+      return (
+        <ModalSection label="Device Disabled">
+          <div style={{ ...styles.noData, color: '#475569' }}>
+            This device was disabled by the ingestion pipeline (HTTP 403 — DEVICE_DISABLED).
+            All subsequent telemetry events for this device are suppressed.
+          </div>
+          <JsonBlock value={d} />
+        </ModalSection>
+      );
+
     default:
       return <ModalSection label="Data"><JsonBlock value={d} /></ModalSection>;
   }
@@ -272,10 +287,11 @@ export function EventLog({ events }: Props) {
             });
             const summary = getSummary(ev);
 
+            const isDisabled = ev.event_type === 'disabled';
             return (
               <div
                 key={`${ev.timestamp}:${ev.device_id}:${ev.event_type}:${i}`}
-                style={{ ...styles.row, cursor: 'pointer' }}
+                style={{ ...styles.row, cursor: 'pointer', opacity: isDisabled ? 0.45 : 1 }}
                 onClick={() => setModalEvent(ev)}
               >
                 <span style={{ ...styles.typeBadge, color: typeColor, borderColor: typeColor }}>

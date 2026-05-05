@@ -5,6 +5,7 @@ Description: >
   BackendService lives in 05-service to allow independent redeployments.
   Depends on: 02-network (VPC + security groups), 03-persistent (ECR).
   Database: SQLite on ECS ephemeral storage (no PostgreSQL sidecar or EFS needed).
+  Ingestion pipeline: external Docker-on-EC2 PoC at ingestion-pipeline.aleksandr-mordanov.click
 
 # ─── Parameters ───────────────────────────────────────────────────────────────
 
@@ -54,23 +55,17 @@ Parameters:
     Type: Number
     Default: 5
 
-  CaCertSecretArn:
-    Type: String
-    Description: >
-      ARN of the Secrets Manager secret containing the CA certificate and private key
-      (JSON keys: cert_pem, key_pem). Created by bootstrap.sh from the JITR CA files.
-
   DefaultHttpEndpoints:
     Type: String
-    Default: ""
+    Default: "ingestion::http://ingestion-pipeline.aleksandr-mordanov.click:9000/ingest"
     Description: >
       Comma-separated name::url pairs for HTTP send targets pre-populated in the UI.
-      Example: aws-iot::https://xxx.iot.us-west-2.amazonaws.com:8443/topics/health/telemetry?qos=1
+      Points to the ingestion pipeline PoC running Docker on EC2.
 
   DefaultMqttBrokerUrl:
     Type: String
-    Default: ""
-    Description: MQTT broker URL shown as default in the UI, e.g. mqtt://xxx.iot.us-west-2.amazonaws.com
+    Default: "mqtt://ingestion-pipeline.aleksandr-mordanov.click:1883"
+    Description: MQTT broker URL — Mosquitto on the ingestion pipeline EC2 instance.
 
   DefaultMqttTopic:
     Type: String
@@ -113,8 +108,6 @@ Parameters:
     Type: String
     Default: "2048"
     AllowedValues: ["1024", "2048", "3072", "4096"]
-
-# ─── Conditions ───────────────────────────────────────────────────────────────
 
 # ─── Resources ────────────────────────────────────────────────────────────────
 
@@ -224,32 +217,7 @@ Resources:
             Principal:
               Service: ecs-tasks.amazonaws.com
             Action: sts:AssumeRole
-      Policies:
-        - PolicyName: IoTPublish
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Effect: Allow
-                Action:
-                  - iot:Publish
-                  - iot:Connect
-                  - iot:Subscribe
-                  - iot:Receive
-                Resource: "*"
-              - Effect: Allow
-                Action:
-                  - iot:RegisterCertificateWithoutCA
-                  - iot:CreateThing
-                  - iot:DescribeThing
-                  - iot:AttachPolicy
-                  - iot:AttachThingPrincipal
-                  - iot:GetPolicy
-                  - iot:CreatePolicy
-                Resource: "*"
-              - Effect: Allow
-                Action:
-                  - sts:GetCallerIdentity
-                Resource: "*"
+
   BackendTaskDefinition:
     Type: AWS::ECS::TaskDefinition
     Properties:
@@ -308,10 +276,6 @@ Resources:
             - Name: INGESTION_API_KEY
               Value: !Ref IngestionApiKey
           Secrets:
-            - Name: CA_CERT_PEM
-              ValueFrom: !Sub "${CaCertSecretArn}:cert_pem::"
-            - Name: CA_KEY_PEM
-              ValueFrom: !Sub "${CaCertSecretArn}:key_pem::"
             - Name: APP_CONFIG_SECRET
               ValueFrom: !Ref AppConfigSecret
           LogConfiguration:

@@ -46,7 +46,7 @@ function EndpointCard({ ep }: { ep: EndpointStatus }) {
   const total = ep.success_count + ep.error_count;
   const successRate = total > 0 ? (ep.success_count / total) * 100 : 100;
   const color = PROTOCOL_COLORS[ep.protocol];
-  const errors = ep.recent_errors ?? [];
+  const errors = (ep.recent_errors ?? []).filter(e => e.message !== 'unknown error');
 
   return (
     <div style={styles.card}>

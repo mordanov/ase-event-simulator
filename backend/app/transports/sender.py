@@ -167,7 +167,7 @@ class HTTPTransport(BaseTransport):
             body: Optional[dict] = None
             try:
                 body = resp.json()
-                if ok and body:
+                if resp.status_code == 200 and body:
                     self.last_credit_results.extend(body.get("credit_results", []))
             except Exception:
                 pass
@@ -221,7 +221,7 @@ class HTTPTransport(BaseTransport):
             body: Optional[dict] = None
             try:
                 body = resp.json()
-                if ok and body:
+                if resp.status_code == 200 and body:
                     self.last_credit_results.extend(body.get("credit_results", []))
             except Exception:
                 pass
