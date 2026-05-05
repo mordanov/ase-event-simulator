@@ -38,6 +38,8 @@ const PROTOCOL_COLORS: Record<TransportProtocol, string> = {
   grpc: '#c084fc',
 };
 
+const UNIMPLEMENTED_PROTOCOLS: TransportProtocol[] = ['grpc', 'websocket'];
+
 export function ConfigPanel({
   deviceTypes, scenarios, protocols, sendModes, defaults,
   onStart, onStop, onStopAll, isRunning, loading,
@@ -85,8 +87,15 @@ export function ConfigPanel({
       endpoints: cfg.endpoints.map((e, idx) => idx === i ? { ...e, ...patch } : e),
     });
 
+  // HTTP endpoints are always active regardless of the enabled checkbox state.
+  const effectiveEnabled = (e: EndpointConfig) => e.protocol === 'http' || e.enabled;
+
+  const hasUnimplementedEndpoint = cfg.endpoints.some(e =>
+    effectiveEnabled(e) && UNIMPLEMENTED_PROTOCOLS.includes(e.protocol),
+  );
+
   const handleStart = () => {
-    const enabledEndpoints = cfg.endpoints.filter(e => e.enabled);
+    const enabledEndpoints = cfg.endpoints.filter(effectiveEnabled);
     if (enabledEndpoints.length === 0) {
       setValidationError('At least one enabled endpoint is required.');
       return;
@@ -243,7 +252,13 @@ export function ConfigPanel({
               <select
                 style={{ ...styles.select, width: 120 }}
                 value={ep.protocol}
-                onChange={e => updateEndpoint(i, { protocol: e.target.value as TransportProtocol })}
+                onChange={e => {
+                  const proto = e.target.value as TransportProtocol;
+                  updateEndpoint(i, {
+                    protocol: proto,
+                    enabled: proto === 'http' ? true : ep.enabled,
+                  });
+                }}
               >
                 {protocols.map(p => (
                   <option key={p.value} value={p.value}>{p.label}</option>
@@ -257,6 +272,11 @@ export function ConfigPanel({
               />
               <button style={styles.iconBtn} onClick={() => removeEndpoint(i)}>✕</button>
             </div>
+            {UNIMPLEMENTED_PROTOCOLS.includes(ep.protocol) && (
+              <div style={styles.endpointProtocolError}>
+                This protocol is not implemented yet
+              </div>
+            )}
             <div style={styles.row}>
               <input
                 placeholder={ep.protocol === 'mqtt' ? 'mqtt://host:1883/topic' : 'https://api.example.com/ingest'}
@@ -264,21 +284,24 @@ export function ConfigPanel({
                 value={ep.url}
                 onChange={e => updateEndpoint(i, { url: e.target.value })}
               />
-              <label style={styles.toggleLabel}>
+              <label style={{ ...styles.toggleLabel, opacity: ep.protocol === 'http' ? 0.5 : 1 }}>
                 <input
                   type="checkbox"
-                  checked={ep.enabled}
+                  checked={ep.protocol === 'http' ? true : ep.enabled}
+                  disabled={ep.protocol === 'http'}
                   onChange={e => updateEndpoint(i, { enabled: e.target.checked })}
                 />
-                <span style={{ marginLeft: 4 }}>Enabled</span>
+                <span style={{ marginLeft: 4 }}>
+                  {ep.protocol === 'http' ? 'Always enabled' : 'Enabled'}
+                </span>
               </label>
             </div>
           </div>
         ))}
 
-        {cfg.endpoints.filter(e => e.enabled).length > 1 && (
+        {cfg.endpoints.filter(e => effectiveEnabled(e) && e.protocol === 'http').length > 1 && (
           <div style={styles.endpointModeRow}>
-            <span style={styles.endpointModeLabel}>Multi-endpoint mode</span>
+            <span style={styles.endpointModeLabel}>HTTP multi-endpoint mode</span>
             <select
               style={styles.select}
               value={cfg.endpoint_mode}
@@ -302,7 +325,7 @@ export function ConfigPanel({
           <button
             style={{ ...styles.ctrlBtn, ...styles.startBtn }}
             onClick={handleStart}
-            disabled={loading || cfg.devices.length === 0 || cfg.endpoints.filter(e => e.enabled).length === 0}
+            disabled={loading || cfg.devices.length === 0 || cfg.endpoints.filter(effectiveEnabled).length === 0 || hasUnimplementedEndpoint}
           >
             {loading ? '⏳ Starting…' : '▶ Start Simulation'}
           </button>
@@ -525,6 +548,14 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '8px 12px',
     fontSize: 12,
     marginBottom: 4,
+  },
+  endpointProtocolError: {
+    background: '#2d1a0a',
+    border: '1px solid #78350f',
+    color: '#fb923c',
+    borderRadius: 4,
+    padding: '4px 8px',
+    fontSize: 11,
   },
   countWrap: { display: 'flex', flexDirection: 'column', gap: 2 },
   endpointModeRow: {
