@@ -95,7 +95,7 @@ skip()    { echo -e "${YELLOW}[SKIP]${NC}  $*"; }
 
 step "Preflight checks"
 
-for cmd in aws docker npm jq; do
+for cmd in aws docker npm jq openssl; do
   command -v "$cmd" &>/dev/null || error "Required tool not found: $cmd"
 done
 success "All required tools present"
@@ -243,6 +243,38 @@ ECS_CLUSTER=$(PLAT ECSClusterName)
 ALB_DNS=$(PLAT ALBDNSName)
 TASK_DEF_FAMILY=$(PLAT BackendTaskDefinitionFamily)
 TARGET_GROUP_ARN=$(PLAT BackendTargetGroupArn)
+CA_CERT_SECRET_ARN=$(PLAT CACertPemSecretArn)
+CA_KEY_SECRET_ARN=$(PLAT CAKeyPemSecretArn)
+
+# ── CA certificate initialisation ────────────────────────────────────────────
+# Generate a persistent CA cert/key once and store in Secrets Manager.
+# Skipped on subsequent runs when the secret already contains real PEM data.
+
+step "CA certificate initialisation"
+CA_CURRENT=$(aws secretsmanager get-secret-value \
+  --secret-id "$CA_CERT_SECRET_ARN" --region "$REGION" \
+  --query 'SecretString' --output text 2>/dev/null || echo "SECRETPLACEHOLDER")
+
+if [[ "$CA_CURRENT" == "SECRETPLACEHOLDER" ]]; then
+  info "Generating CA certificate and private key..."
+  TMPKEY=$(mktemp) TMPCRT=$(mktemp)
+  openssl genrsa -out "$TMPKEY" 4096 2>/dev/null
+  openssl req -new -x509 -days 3650 \
+    -key "$TMPKEY" -out "$TMPCRT" \
+    -subj "/CN=HealthSimulator CA/O=HealthSimulator/C=US" 2>/dev/null
+
+  aws secretsmanager put-secret-value \
+    --secret-id "$CA_CERT_SECRET_ARN" --region "$REGION" \
+    --secret-string "$(cat "$TMPCRT")"
+  aws secretsmanager put-secret-value \
+    --secret-id "$CA_KEY_SECRET_ARN" --region "$REGION" \
+    --secret-string "$(cat "$TMPKEY")"
+
+  rm -f "$TMPKEY" "$TMPCRT"
+  success "CA credentials generated and stored in Secrets Manager"
+else
+  success "CA credentials already initialised — skipping"
+fi
 
 # ─── Step 4 — Docker build + push ────────────────────────────────────────────
 

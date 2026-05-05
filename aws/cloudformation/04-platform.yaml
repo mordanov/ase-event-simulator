@@ -165,6 +165,24 @@ Resources:
         DEFAULT_MAX_DEVICES=200
         DEFAULT_ANOMALY_RATE=0.02
 
+  CACertPemSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "/${ProjectName}/ca-cert-pem"
+      Description: >
+        PEM-encoded CA certificate for X.509/JITR device simulation.
+        Populated by bootstrap.sh after stack creation (initial value is a secretplaceholder).
+      SecretString: "SECRETPLACEHOLDER"
+
+  CAKeyPemSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "/${ProjectName}/ca-key-pem"
+      Description: >
+        PEM-encoded CA private key for X.509/JITR device simulation.
+        Populated by bootstrap.sh after stack creation (initial value is a secretplaceholder).
+      SecretString: "SECRETPLACEHOLDER"
+
   # ══ ECS ════════════════════════════════════════════════════════════════════
 
   ECSCluster:
@@ -278,6 +296,10 @@ Resources:
           Secrets:
             - Name: APP_CONFIG_SECRET
               ValueFrom: !Ref AppConfigSecret
+            - Name: CA_CERT_PEM
+              ValueFrom: !Ref CACertPemSecret
+            - Name: CA_KEY_PEM
+              ValueFrom: !Ref CAKeyPemSecret
           LogConfiguration:
             LogDriver: awslogs
             Options:
@@ -303,6 +325,18 @@ Outputs:
     Value: !Ref AppConfigSecret
     Export:
       Name: !Sub "${AWS::StackName}:AppConfigSecretArn"
+
+  CACertPemSecretArn:
+    Description: ARN of the CA certificate secret — populate with bootstrap.sh before first deploy.
+    Value: !Ref CACertPemSecret
+    Export:
+      Name: !Sub "${AWS::StackName}:CACertPemSecretArn"
+
+  CAKeyPemSecretArn:
+    Description: ARN of the CA private key secret — populate with bootstrap.sh before first deploy.
+    Value: !Ref CAKeyPemSecret
+    Export:
+      Name: !Sub "${AWS::StackName}:CAKeyPemSecretArn"
 
   ECSClusterName:
     Description: ECS cluster name — passed to 05-service and used by GitHub Actions.
