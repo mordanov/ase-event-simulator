@@ -67,6 +67,9 @@ INGESTION_API_KEY="${INGESTION_API_KEY:-dev-key}"
 DOMAIN_NAME="${DOMAIN_NAME:-}"
 HOSTED_ZONE_ID="${HOSTED_ZONE_ID:-}"
 
+# Ingestion pipeline CDN — Elastic IP of the EC2 instance (from ingestion-pipeline EC2 stack)
+INGESTION_PIPELINE_IP="${INGESTION_PIPELINE_IP:-}"
+
 # Skip flags (set to 1 to skip a step that already completed successfully)
 SKIP_BUCKETS="${SKIP_BUCKETS:-0}"
 SKIP_NETWORK="${SKIP_NETWORK:-0}"
@@ -345,6 +348,9 @@ else
   success "ACM stack deployed: $STACK_ACM (us-east-1)"
 fi
 
+ACM() { aws cloudformation describe-stacks --stack-name "$STACK_ACM" --region us-east-1 \
+          --query "Stacks[0].Outputs[?OutputKey==\`$1\`].OutputValue" --output text 2>/dev/null || true; }
+
 # ─── Step 7 — CloudFront + Route 53 ──────────────────────────────────────────
 
 if [[ "${SKIP_CDN:-0}" == "1" ]]; then
@@ -352,10 +358,11 @@ if [[ "${SKIP_CDN:-0}" == "1" ]]; then
 else
   step "CloudFront + Route 53 (07-cdn)"
 
-  CERT_ARN=$(aws cloudformation describe-stacks \
-    --stack-name "$STACK_ACM" --region us-east-1 \
-    --query 'Stacks[0].Outputs[?OutputKey==`CertificateArn`].OutputValue' \
-    --output text)
+  [[ -z "$INGESTION_PIPELINE_IP" ]] && \
+    error "INGESTION_PIPELINE_IP not set — pass the EC2 Elastic IP: INGESTION_PIPELINE_IP=1.2.3.4"
+
+  CERT_ARN=$(ACM CertificateArn)
+  INGESTION_CERT_ARN=$(ACM IngestionCertificateArn)
 
   aws cloudformation deploy \
     --template-file "$CF_DIR/07-cdn.yaml" \
@@ -368,6 +375,8 @@ else
         BackendAlbDns="$ALB_DNS" \
         FrontendBucketName="$FRONTEND_BUCKET" \
         FrontendBucketArn="$FRONTEND_BUCKET_ARN" \
+        IngestionPipelineIp="$INGESTION_PIPELINE_IP" \
+        IngestionCertificateArn="$INGESTION_CERT_ARN" \
     --no-fail-on-empty-changeset
   success "CDN stack deployed: $STACK_CDN"
 
@@ -433,6 +442,9 @@ echo -e "  ALB endpoint       : ${CYAN}http://${ALB_DNS:-N/A}${NC}"
 echo -e "  Ingestion pipeline : ${CYAN}http://${INGESTION_PIPELINE_HOST}:9000${NC}"
 echo -e "  MQTT broker        : ${CYAN}${INGESTION_MQTT_URL}${NC}"
 [[ -n "$DOMAIN_NAME" ]] && echo -e "  Site URL           : ${CYAN}https://${DOMAIN_NAME}${NC}"
+[[ -n "$INGESTION_PIPELINE_IP" ]] && echo -e "  Ingestion CDN      : ${CYAN}https://ingestion-pipeline.aleksandr-mordanov.click${NC}"
+[[ -n "$INGESTION_PIPELINE_IP" ]] && echo -e "  Grafana            : ${CYAN}https://ingestion-pipeline.aleksandr-mordanov.click/grafana${NC}"
+[[ -n "$INGESTION_PIPELINE_IP" ]] && echo -e "  Prometheus         : ${CYAN}https://ingestion-pipeline.aleksandr-mordanov.click/prometheus${NC}"
 echo ""
 echo -e "  GitHub Actions secrets to configure:"
 echo -e "  ${YELLOW}AWS_REGION=${REGION}${NC}"
