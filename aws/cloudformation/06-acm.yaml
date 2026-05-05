@@ -15,11 +15,19 @@ Parameters:
       Public hostname for the simulator, e.g. event-simulator.somedomain.com.
       An ACM certificate covering exactly this name will be issued.
 
+  IngestionDomainName:
+    Type: String
+    Default: "ingestion-pipeline.aleksandr-mordanov.click"
+    Description: >
+      Public hostname for the ingestion pipeline CloudFront distribution.
+      A separate ACM certificate is required because CloudFront validates the
+      certificate CN/SAN against the distribution alias.
+
   HostedZoneId:
     Type: String
     Description: >
-      Route 53 hosted zone ID for the domain above.
-      CloudFormation uses it to create the DNS validation CNAME automatically.
+      Route 53 hosted zone ID for both domains above.
+      CloudFormation uses it to create DNS validation CNAMEs automatically.
 
 # ─── Resources ────────────────────────────────────────────────────────────────
 
@@ -34,12 +42,27 @@ Resources:
         - DomainName: !Ref DomainName
           HostedZoneId: !Ref HostedZoneId
 
+  IngestionCertificate:
+    Type: AWS::CertificateManager::Certificate
+    Properties:
+      DomainName: !Ref IngestionDomainName
+      ValidationMethod: DNS
+      DomainValidationOptions:
+        - DomainName: !Ref IngestionDomainName
+          HostedZoneId: !Ref HostedZoneId
+
 # ─── Outputs ──────────────────────────────────────────────────────────────────
 
 Outputs:
 
   CertificateArn:
-    Description: ARN of the ACM certificate (pass to 07-cdn.yaml as CertificateArn).
+    Description: ARN of the simulator ACM certificate (pass to 07-cdn.yaml as CertificateArn).
     Value: !Ref Certificate
     Export:
       Name: !Sub "${AWS::StackName}:CertificateArn"
+
+  IngestionCertificateArn:
+    Description: ARN of the ingestion pipeline ACM certificate (pass to 07-cdn.yaml as IngestionCertificateArn).
+    Value: !Ref IngestionCertificate
+    Export:
+      Name: !Sub "${AWS::StackName}:IngestionCertificateArn"
