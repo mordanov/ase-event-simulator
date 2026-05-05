@@ -137,6 +137,52 @@ def _rf(lo: float, hi: float, decimals: int = 2) -> float:
     return round(random.uniform(lo, hi), decimals)
 
 
+def _biased_ri(lo: float, hi: float, bias: float, noise: float = 0.18) -> int:
+    """Triangular-sample an integer in [lo, hi] with mode driven by bias."""
+    noisy = max(0.0, min(1.0, bias + random.gauss(0.0, noise)))
+    return round(random.triangular(lo, hi, lo + (hi - lo) * noisy))
+
+
+def _biased_rf(lo: float, hi: float, bias: float, decimals: int = 2, noise: float = 0.18) -> float:
+    """Triangular-sample a float in [lo, hi] with mode driven by bias."""
+    noisy = max(0.0, min(1.0, bias + random.gauss(0.0, noise)))
+    return round(random.triangular(lo, hi, lo + (hi - lo) * noisy), decimals)
+
+
+def _compute_health_bias(device: dict) -> float:
+    """
+    Stable [0.0, 1.0] health bias for a device.
+    0.0  → healthy end of every metric range
+    1.0  → concerning end of every metric range
+
+    Derived from biometrics (BMI, age) when available so DB-backed devices get
+    a deterministic tendency. Ephemeral devices draw from Beta(0.4, 0.4) which
+    is U-shaped — most land near 0 or 1, few cluster at 0.5.
+    """
+    components: list[float] = []
+
+    weight = device.get("weight_kg")
+    height = device.get("height_cm")
+    if weight and height and height > 0:
+        bmi = weight / (height / 100.0) ** 2
+        # BMI 18.5 (healthy lower bound) → 0.0,  BMI 35 (obese) → 1.0
+        components.append(max(0.0, min(1.0, (bmi - 18.5) / 16.5)))
+
+    birth_date = device.get("birth_date")
+    if birth_date:
+        try:
+            from datetime import date as _date
+            age = _date.today().year - int(birth_date[:4])
+            # Age 20 → 0.0,  age 75 → 1.0
+            components.append(max(0.0, min(1.0, (age - 20) / 55.0)))
+        except Exception:
+            pass
+
+    base = (sum(components) / len(components)) if components else random.betavariate(0.4, 0.4)
+    # Small per-device jitter so identical biometrics still produce variety
+    return max(0.0, min(1.0, base + random.gauss(0.0, 0.07)))
+
+
 class TelemetryGenerator:
     """
     Generates realistic TelemetryEvent objects for any device type + scenario.
@@ -179,6 +225,13 @@ class TelemetryGenerator:
                         "gps_lon": _rf(*GPS_BOUNDS["lon"], 5),
                     })
 
+        # Assign a stable health bias to every device that doesn't have one yet.
+        # DB-backed devices may carry biometrics; ephemeral devices draw from a
+        # U-shaped Beta so they cluster near healthy (0) or concerning (1).
+        for d in self._devices:
+            if "health_bias" not in d:
+                d["health_bias"] = _compute_health_bias(d)
+
     @property
     def device_count(self) -> int:
         return len(self._devices)
@@ -210,6 +263,14 @@ class TelemetryGenerator:
         caps = DEVICE_CAPABILITIES[device["device_type"]]
         ranges = SCENARIO_RANGES[data_scenario]
 
+        # For EMERGENCY events use full-range uniform sampling — anything can happen.
+        # For all other scenarios apply the device's stable health bias so each
+        # device consistently leans healthy or concerning.
+        bias: Optional[float] = (
+            None if data_scenario == ScenarioType.EMERGENCY
+            else device.get("health_bias")
+        )
+
         return TelemetryEvent(
             device_id=device["device_id"],
             device_type=device["device_type"],
@@ -220,15 +281,15 @@ class TelemetryGenerator:
             protocol=protocol,
             firmware_version=device["firmware"],
             cert_fingerprint=device.get("cert_fingerprint") or None,
-            heart_rate=self._heart_rate(ranges, caps),
-            steps=self._steps(ranges, caps),
-            spo2=self._spo2(ranges, caps),
-            sleep=self._sleep(ranges, caps, data_scenario),
-            blood_pressure=self._bp(ranges, caps),
-            temperature=self._temperature(ranges, caps),
+            heart_rate=self._heart_rate(ranges, caps, bias),
+            steps=self._steps(ranges, caps, bias),
+            spo2=self._spo2(ranges, caps, bias),
+            sleep=self._sleep(ranges, caps, data_scenario, bias),
+            blood_pressure=self._bp(ranges, caps, bias),
+            temperature=self._temperature(ranges, caps, bias),
             gps=self._gps(caps, device),
-            stress=self._stress(ranges, caps),
-            hydration=self._hydration(ranges, caps),
+            stress=self._stress(ranges, caps, bias),
+            hydration=self._hydration(ranges, caps, bias),
             battery_pct=_ri(5, 100) if "battery" in caps else None,
         )
 
@@ -246,34 +307,45 @@ class TelemetryGenerator:
 
     # ── private metric builders ──────────────────────────────────────────────
 
-    def _heart_rate(self, r: dict, caps: set) -> Optional[HeartRateMetrics]:
+    def _heart_rate(self, r: dict, caps: set, bias: Optional[float]) -> Optional[HeartRateMetrics]:
         if "heart_rate" not in caps:
             return None
-        return HeartRateMetrics(
-            bpm=_ri(*r["heart_rate"]),
-            hrv_ms=_rf(*r["hrv_ms"]) if "hrv" in caps else None,
-        )
+        if bias is not None:
+            # High bias → high BPM (concerning); low HRV is also concerning → 1-bias
+            bpm = _biased_ri(*r["heart_rate"], bias)
+            hrv = _biased_rf(*r["hrv_ms"], 1.0 - bias) if "hrv" in caps else None
+        else:
+            bpm = _ri(*r["heart_rate"])
+            hrv = _rf(*r["hrv_ms"]) if "hrv" in caps else None
+        return HeartRateMetrics(bpm=bpm, hrv_ms=hrv)
 
-    def _steps(self, r: dict, caps: set) -> Optional[StepsMetrics]:
+    def _steps(self, r: dict, caps: set, bias: Optional[float]) -> Optional[StepsMetrics]:
         if "steps" not in caps:
             return None
-        count = _ri(*r["steps_per_event"])
-        dist = round(count * 0.762, 2)  # avg stride ~76.2 cm
+        # High bias → fewer steps (sedentary / unhealthy)
+        count = _biased_ri(*r["steps_per_event"], 1.0 - bias) if bias is not None else _ri(*r["steps_per_event"])
+        dist = round(count * 0.762, 2)
         cal = round(count * r["calories_per_step"], 2)
         return StepsMetrics(count=count, distance_m=dist, calories_kcal=cal)
 
-    def _spo2(self, r: dict, caps: set) -> Optional[SpO2Metrics]:
+    def _spo2(self, r: dict, caps: set, bias: Optional[float]) -> Optional[SpO2Metrics]:
         if "spo2" not in caps:
             return None
-        return SpO2Metrics(percentage=_rf(*r["spo2"], 1))
+        # High bias → low SpO2 (concerning)
+        pct = _biased_rf(*r["spo2"], 1.0 - bias, 1) if bias is not None else _rf(*r["spo2"], 1)
+        return SpO2Metrics(percentage=pct)
 
-    def _sleep(self, r: dict, caps: set, scenario: ScenarioType) -> Optional[SleepMetrics]:
+    def _sleep(self, r: dict, caps: set, scenario: ScenarioType, bias: Optional[float]) -> Optional[SleepMetrics]:
         if "sleep" not in caps or scenario not in (ScenarioType.SLEEP, ScenarioType.RANDOM):
             return None
         total = _ri(240, 540)
         deep = _ri(60, min(120, total // 3))
         rem = _ri(60, min(100, total // 4))
-        score = _ri(40, 100) if scenario != ScenarioType.EMERGENCY else _ri(10, 40)
+        # High bias → low sleep score (poor sleep quality)
+        if bias is not None:
+            score = _biased_ri(40, 100, 1.0 - bias)
+        else:
+            score = _ri(10, 40)  # EMERGENCY
         return SleepMetrics(
             duration_minutes=total,
             deep_sleep_minutes=deep,
@@ -281,18 +353,24 @@ class TelemetryGenerator:
             sleep_score=score,
         )
 
-    def _bp(self, r: dict, caps: set) -> Optional[BloodPressureMetrics]:
-        if "heart_rate" not in caps:  # only devices with HR sensor get BP
+    def _bp(self, r: dict, caps: set, bias: Optional[float]) -> Optional[BloodPressureMetrics]:
+        if "heart_rate" not in caps:
             return None
-        return BloodPressureMetrics(
-            systolic_mmhg=_ri(*r["systolic"]),
-            diastolic_mmhg=_ri(*r["diastolic"]),
-        )
+        # High bias → high BP (concerning)
+        if bias is not None:
+            sys = _biased_ri(*r["systolic"], bias)
+            dia = _biased_ri(*r["diastolic"], bias)
+        else:
+            sys = _ri(*r["systolic"])
+            dia = _ri(*r["diastolic"])
+        return BloodPressureMetrics(systolic_mmhg=sys, diastolic_mmhg=dia)
 
-    def _temperature(self, r: dict, caps: set) -> Optional[TemperatureMetrics]:
+    def _temperature(self, r: dict, caps: set, bias: Optional[float]) -> Optional[TemperatureMetrics]:
         if "temperature" not in caps:
             return None
-        return TemperatureMetrics(celsius=_rf(*r["temperature"], 1))
+        # High bias → high temperature (fever / concerning)
+        c = _biased_rf(*r["temperature"], bias, 1) if bias is not None else _rf(*r["temperature"], 1)
+        return TemperatureMetrics(celsius=c)
 
     def _gps(self, caps: set, device: dict) -> Optional[GPSMetrics]:
         if "gps" not in caps:
@@ -306,12 +384,16 @@ class TelemetryGenerator:
             accuracy_m=_rf(1.0, 15.0, 1),
         )
 
-    def _stress(self, r: dict, caps: set) -> Optional[StressMetrics]:
+    def _stress(self, r: dict, caps: set, bias: Optional[float]) -> Optional[StressMetrics]:
         if "stress" not in caps:
             return None
-        return StressMetrics(score=_ri(*r["stress"]))
+        # High bias → high stress score (concerning)
+        score = _biased_ri(*r["stress"], bias) if bias is not None else _ri(*r["stress"])
+        return StressMetrics(score=score)
 
-    def _hydration(self, r: dict, caps: set) -> Optional[HydrationMetrics]:
+    def _hydration(self, r: dict, caps: set, bias: Optional[float]) -> Optional[HydrationMetrics]:
         if "hydration" not in caps:
             return None
-        return HydrationMetrics(level_percent=_rf(*r["hydration"], 1))
+        # High bias → low hydration (dehydrated / concerning)
+        lvl = _biased_rf(*r["hydration"], 1.0 - bias, 1) if bias is not None else _rf(*r["hydration"], 1)
+        return HydrationMetrics(level_percent=lvl)
