@@ -1,3 +1,5 @@
+"""SQLAlchemy ORM models for persisted simulator device records."""
+
 from __future__ import annotations
 
 from sqlalchemy import Boolean, DateTime, Float, Index, Integer, String, Text, text
@@ -7,6 +9,8 @@ from app.db import Base
 
 
 class Device(Base):
+    """Persisted device profile and registration state."""
+
     __tablename__ = "devices"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

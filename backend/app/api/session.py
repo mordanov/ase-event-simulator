@@ -1,9 +1,8 @@
 """
-Session manager.
+Simulation session orchestration and lifecycle management.
 
-One Session = one running simulation.
-The manager keeps a registry of active sessions and exposes
-start / stop / status operations.
+One session represents one active simulation run.
+The manager tracks active sessions and exposes start, stop, and status operations.
 """
 
 from __future__ import annotations
@@ -14,11 +13,14 @@ import os
 import time
 from collections import defaultdict, deque
 from datetime import UTC, datetime
+from urllib.parse import urlparse
 
 import httpx
 from sqlalchemy import func, select
 
+from app.db import async_session_factory
 from app.generators.telemetry import GPS_BOUNDS, TelemetryGenerator, _rf
+from app.models.device_orm import Device
 from app.models.telemetry import (
     ActivityEvent,
     BatchPayload,
@@ -32,6 +34,7 @@ from app.models.telemetry import (
     SessionStatus,
     TelemetryEvent,
 )
+from app.services.registration_service import register_devices
 from app.services.runtime_mode import is_cloud_mode
 from app.transports.sender import (
     AWSIoTMQTTTransport,
@@ -82,14 +85,14 @@ class Session:
         # Unified activity log (all backend calls)
         self._activity_log: deque[ActivityEvent] = deque(maxlen=MAX_ACTIVITY_LOG)
 
-        # Build generator (DB-backed devices take priority over ephemeral profiles)
+        # Build generator (DB-backed devices take priority over ephemeral profiles).
         self._generator = TelemetryGenerator(
             device_profiles=config.devices,
             preloaded_devices=preloaded_devices,
             anomaly_rate=config.anomaly_rate,
         )
 
-        # Build transports (one per endpoint)
+        # Build transports (one per enabled endpoint).
         self._transports: list[BaseTransport] = [
             make_transport(ep) for ep in config.endpoints if ep.enabled
         ]
@@ -130,6 +133,63 @@ class Session:
     def running(self) -> bool:
         return self._running
 
+    def _clear_http_credit_results(self) -> None:
+        for transport in self._transports:
+            if isinstance(transport, HTTPTransport):
+                transport.last_credit_results.clear()
+
+    def _active_device_indices(self, device_count: int, timestamp: str) -> list[int]:
+        active_indices: list[int] = []
+        for index in range(device_count):
+            device_id = self._generator.devices[index]["device_id"]
+            if device_id in self._disabled_device_ids:
+                self._activity_log.append(
+                    ActivityEvent(
+                        timestamp=timestamp,
+                        event_type="disabled",
+                        device_id=device_id,
+                        status="disabled",
+                        data={"reason": "Device is disabled - event skipped"},
+                    )
+                )
+                continue
+            active_indices.append(index)
+        return active_indices
+
+    def _log_event_activity(
+        self,
+        events: list[TelemetryEvent],
+        event_responses: dict[str, list],
+        timestamp: str,
+    ) -> None:
+        for event in events:
+            self._activity_log.append(
+                ActivityEvent(
+                    timestamp=timestamp,
+                    event_type=event.scenario.value,
+                    device_id=event.device_id,
+                    status="anomaly" if event.is_anomaly else "ok",
+                    data={
+                        "payload": event.model_dump(mode="json"),
+                        "endpoint_responses": event_responses.get(event.event_id, []),
+                    },
+                )
+            )
+
+    def _log_reward_activity(self, credit_results: list[dict], timestamp: str) -> None:
+        for result in credit_results:
+            if result.get("activity_reward", 0) <= 0:
+                continue
+            self._activity_log.append(
+                ActivityEvent(
+                    timestamp=timestamp,
+                    event_type="rewards",
+                    device_id=result.get("device_id", ""),
+                    status="ok",
+                    data=result,
+                )
+            )
+
     # ── main loop ──────────────────────────────────────────────────────────
 
     async def _run(self):
@@ -167,8 +227,6 @@ class Session:
                 self._devices_pending = max(0, self._devices_pending - 1)
 
         try:
-            from app.services.registration_service import register_devices
-
             fingerprints = await register_devices(device_ids, on_event=on_reg_event)
             for d in self._generator.devices:
                 d["cert_fingerprint"] = fingerprints.get(d["device_id"], "")
@@ -190,11 +248,6 @@ class Session:
         if not http_transports and not mqtt_transports:
             return
         try:
-            from sqlalchemy import select
-
-            from app.db import async_session_factory
-            from app.models.device_orm import Device
-
             device_ids = list(fingerprints.keys())
             async with async_session_factory() as db:
                 rows = (
@@ -300,12 +353,10 @@ class Session:
 
     async def _refresh_disabled_devices(self) -> None:
         """Poll /api/v1/rules/disabled-devices and update _disabled_device_ids."""
-        from urllib.parse import urlparse as _up
-
         rules_base: str | None = None
         for t in self._transports:
             if isinstance(t, HTTPTransport):
-                p = _up(t.endpoint.url)
+                p = urlparse(t.endpoint.url)
                 rules_base = f"{p.scheme}://{p.netloc}"
                 break
         if not rules_base:
@@ -340,9 +391,6 @@ class Session:
         handicap = self.config.recommendation_handicap
         if handicap <= 0 or not credit_results:
             return
-
-        # Derive the recommendation base URL from the first HTTP transport
-        from urllib.parse import urlparse
 
         rec_base: str | None = None
         for t in self._transports:
@@ -500,28 +548,11 @@ class Session:
 
             await self._refresh_disabled_devices()
 
-            # Clear accumulated credit results from the previous cycle
-            for t in self._transports:
-                if isinstance(t, HTTPTransport):
-                    t.last_credit_results.clear()
+            self._clear_http_credit_results()
 
             # Log and skip disabled devices
-            _ts_dis = datetime.now(UTC).isoformat()
-            active_indices = []
-            for _i in range(device_count):
-                _did = self._generator.devices[_i]["device_id"]
-                if _did in self._disabled_device_ids:
-                    self._activity_log.append(
-                        ActivityEvent(
-                            timestamp=_ts_dis,
-                            event_type="disabled",
-                            device_id=_did,
-                            status="disabled",
-                            data={"reason": "Device is disabled — event skipped"},
-                        )
-                    )
-                else:
-                    active_indices.append(_i)
+            disabled_ts = datetime.now(UTC).isoformat()
+            active_indices = self._active_device_indices(device_count, disabled_ts)
 
             # Generate ONE event per active device (protocol = primary transport)
             base_events: list[TelemetryEvent] = [
@@ -598,30 +629,8 @@ class Session:
 
             credit_results = self._collect_credit_results()
             ts_ev = datetime.now(UTC).isoformat()
-            for event in base_events:
-                self._activity_log.append(
-                    ActivityEvent(
-                        timestamp=ts_ev,
-                        event_type=event.scenario.value,
-                        device_id=event.device_id,
-                        status="anomaly" if event.is_anomaly else "ok",
-                        data={
-                            "payload": event.model_dump(mode="json"),
-                            "endpoint_responses": event_responses.get(event.event_id, []),
-                        },
-                    )
-                )
-            for cr in credit_results:
-                if cr.get("activity_reward", 0) > 0:
-                    self._activity_log.append(
-                        ActivityEvent(
-                            timestamp=ts_ev,
-                            event_type="rewards",
-                            device_id=cr.get("device_id", ""),
-                            status="ok",
-                            data=cr,
-                        )
-                    )
+            self._log_event_activity(base_events, event_responses, ts_ev)
+            self._log_reward_activity(credit_results, ts_ev)
             await self._maybe_recommend(credit_results)
             await asyncio.sleep(self.config.interval_seconds)
 
@@ -643,28 +652,11 @@ class Session:
                 else device_count
             )
 
-            # Clear accumulated credit results from the previous cycle
-            for t in self._transports:
-                if isinstance(t, HTTPTransport):
-                    t.last_credit_results.clear()
+            self._clear_http_credit_results()
 
             # Log and skip disabled devices
-            _ts_dis = datetime.now(UTC).isoformat()
-            active_indices = []
-            for _i in range(device_count):
-                _did = self._generator.devices[_i]["device_id"]
-                if _did in self._disabled_device_ids:
-                    self._activity_log.append(
-                        ActivityEvent(
-                            timestamp=_ts_dis,
-                            event_type="disabled",
-                            device_id=_did,
-                            status="disabled",
-                            data={"reason": "Device is disabled — event skipped"},
-                        )
-                    )
-                else:
-                    active_indices.append(_i)
+            disabled_ts = datetime.now(UTC).isoformat()
+            active_indices = self._active_device_indices(device_count, disabled_ts)
 
             # Generate ONE set of events (same event_id/metrics across all transports)
             base_events: list[TelemetryEvent] = [
@@ -757,30 +749,8 @@ class Session:
 
             credit_results = self._collect_credit_results()
             ts_ev = datetime.now(UTC).isoformat()
-            for event in base_events:
-                self._activity_log.append(
-                    ActivityEvent(
-                        timestamp=ts_ev,
-                        event_type=event.scenario.value,
-                        device_id=event.device_id,
-                        status="anomaly" if event.is_anomaly else "ok",
-                        data={
-                            "payload": event.model_dump(mode="json"),
-                            "endpoint_responses": event_responses.get(event.event_id, []),
-                        },
-                    )
-                )
-            for cr in credit_results:
-                if cr.get("activity_reward", 0) > 0:
-                    self._activity_log.append(
-                        ActivityEvent(
-                            timestamp=ts_ev,
-                            event_type="rewards",
-                            device_id=cr.get("device_id", ""),
-                            status="ok",
-                            data=cr,
-                        )
-                    )
+            self._log_event_activity(base_events, event_responses, ts_ev)
+            self._log_reward_activity(credit_results, ts_ev)
             await self._maybe_recommend(credit_results)
             await asyncio.sleep(self.config.interval_seconds)
 
@@ -837,9 +807,6 @@ async def _load_devices_from_db(device_profiles: list) -> list[dict] | None:
     with TelemetryGenerator._devices.  Returns None if DB is unavailable.
     """
     try:
-        from app.db import async_session_factory
-        from app.models.device_orm import Device
-
         devices: list[dict] = []
         async with async_session_factory() as db:
             for profile in device_profiles:

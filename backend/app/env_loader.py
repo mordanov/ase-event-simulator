@@ -1,9 +1,13 @@
+"""Environment bootstrap helpers for local files and injected secret payloads."""
+
 from __future__ import annotations
 
 import json
 import os
 from io import StringIO
 from pathlib import Path
+
+DOTENV_TEXT_ENV_VARS = ("DOTENV_CONTENT", "ENV_FILE_CONTENT", "APP_CONFIG_SECRET")
 
 try:
     from dotenv import dotenv_values, load_dotenv
@@ -25,34 +29,48 @@ except ImportError:  # pragma: no cover - fallback for minimal runtime images
         return values
 
 
+def _set_env_defaults(values: dict[str, object]) -> None:
+    for key, value in values.items():
+        if value is not None:
+            os.environ.setdefault(str(key), str(value))
+
+
+def _read_env_embedded_config() -> str:
+    for var_name in DOTENV_TEXT_ENV_VARS:
+        raw_value = os.getenv(var_name)
+        if raw_value:
+            return raw_value
+    return ""
+
+
+def _parse_embedded_json(payload: str) -> dict[str, object] | None:
+    if not payload.startswith("{"):
+        return None
+    try:
+        parsed = json.loads(payload)
+    except json.JSONDecodeError:
+        return None
+    if isinstance(parsed, dict):
+        return parsed
+    return None
+
+
 def _load_dotenv_text_from_env() -> None:
-    # Supports injecting full dotenv text (or JSON object) from Secrets Manager.
-    raw = (
-        os.getenv("DOTENV_CONTENT")
-        or os.getenv("ENV_FILE_CONTENT")
-        or os.getenv("APP_CONFIG_SECRET")
-    )
-    if not raw:
+    # Supports full dotenv text or JSON object payloads from environment-backed secrets.
+    raw_config = _read_env_embedded_config()
+    if not raw_config:
         return
 
-    payload = raw.strip()
+    payload = raw_config.strip()
     if not payload:
         return
 
-    if payload.startswith("{"):
-        try:
-            data = json.loads(payload)
-        except json.JSONDecodeError:
-            data = None
-        if isinstance(data, dict):
-            for key, value in data.items():
-                if value is not None:
-                    os.environ.setdefault(str(key), str(value))
-            return
+    json_payload = _parse_embedded_json(payload)
+    if json_payload is not None:
+        _set_env_defaults(json_payload)
+        return
 
-    for key, value in dotenv_values(stream=StringIO(payload)).items():
-        if value is not None:
-            os.environ.setdefault(key, value)
+    _set_env_defaults(dotenv_values(stream=StringIO(payload)))
 
 
 def bootstrap_environment() -> None:

@@ -1,8 +1,8 @@
 """
-Telemetry data generators.
-Each device type has a capability profile — only the metrics that
-device physically supports are populated.
-Scenarios shape the *range* of generated values.
+Telemetry data generation utilities.
+
+Each device type has a capability profile, so only supported metrics are populated.
+Scenarios control the value ranges for generated telemetry.
 """
 
 from __future__ import annotations
@@ -29,9 +29,12 @@ from app.models.telemetry import (
     TransportProtocol,
 )
 
+MetricRanges = dict[str, tuple[float, float] | float]
+DeviceRecord = dict[str, object]
+
 # ─── Scenario value ranges ────────────────────────────────────────────────────
 
-SCENARIO_RANGES: dict[ScenarioType, dict] = {
+SCENARIO_RANGES: dict[ScenarioType, MetricRanges] = {
     ScenarioType.WORKOUT: {
         "heart_rate": (120, 175),
         "hrv_ms": (20, 50),
@@ -127,6 +130,13 @@ DEVICE_CAPABILITIES: dict[DeviceType, set[str]] = {
     },
 }
 
+CONCRETE_DEVICE_TYPES = [
+    DeviceType.SMARTWATCH,
+    DeviceType.FITNESS_TRACKER,
+    DeviceType.SMARTPHONE,
+    DeviceType.LAPTOP,
+]
+
 FIRMWARE_VERSIONS: dict[DeviceType, list[str]] = {
     DeviceType.SMARTWATCH: ["2.1.0", "2.2.3", "3.0.0"],
     DeviceType.FITNESS_TRACKER: ["1.5.1", "1.6.0"],
@@ -134,7 +144,7 @@ FIRMWARE_VERSIONS: dict[DeviceType, list[str]] = {
     DeviceType.LAPTOP: ["11.0", "12.0"],
 }
 
-# Approximate GPS bounding box (Europe + NA)
+# Approximate GPS bounding box (Europe and North America).
 GPS_BOUNDS = {
     "lat": (40.0, 55.0),
     "lon": (-10.0, 40.0),
@@ -162,7 +172,7 @@ def _biased_rf(lo: float, hi: float, bias: float, decimals: int = 2, noise: floa
     return round(random.triangular(lo, hi, lo + (hi - lo) * noisy), decimals)
 
 
-def _compute_health_bias(device: dict) -> float:
+def _compute_health_bias(device: DeviceRecord) -> float:
     """
     Stable [0.0, 1.0] health bias for a device.
     0.0  → healthy end of every metric range
@@ -210,28 +220,18 @@ class TelemetryGenerator:
     def __init__(
         self,
         device_profiles: list[DeviceProfile] | None = None,
-        preloaded_devices: list[dict] | None = None,
+        preloaded_devices: list[DeviceRecord] | None = None,
         anomaly_rate: float = 0.1,
     ):
         self.anomaly_rate = anomaly_rate
-        self._devices: list[dict] = []
+        self._devices: list[DeviceRecord] = []
 
         if preloaded_devices:
             self._devices = list(preloaded_devices)
         elif device_profiles:
-            _concrete = [
-                DeviceType.SMARTWATCH,
-                DeviceType.FITNESS_TRACKER,
-                DeviceType.SMARTPHONE,
-                DeviceType.LAPTOP,
-            ]
             for profile in device_profiles:
                 for _ in range(profile.count):
-                    d_type = (
-                        random.choice(_concrete)
-                        if profile.device_type == DeviceType.RANDOM
-                        else profile.device_type
-                    )
+                    d_type = self._resolve_device_type(profile.device_type)
                     self._devices.append(
                         {
                             "device_id": f"{d_type.value}-{uuid.uuid4().hex[:8]}",
@@ -255,8 +255,13 @@ class TelemetryGenerator:
         return len(self._devices)
 
     @property
-    def devices(self) -> list[dict]:
+    def devices(self) -> list[DeviceRecord]:
         return self._devices
+
+    def _resolve_device_type(self, requested_type: DeviceType) -> DeviceType:
+        if requested_type == DeviceType.RANDOM:
+            return random.choice(CONCRETE_DEVICE_TYPES)
+        return requested_type
 
     # ── public API ──────────────────────────────────────────────────────────
 

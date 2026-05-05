@@ -1,9 +1,20 @@
+"""HTTP API routes for session control, metadata, and device registry operations."""
+
 from __future__ import annotations
 
+import os
+import random
+import uuid
+
 from fastapi import APIRouter, HTTPException
+from sqlalchemy import func, select
 
 from app.api.session import session_manager
+from app.db import async_session_factory
+from app.generators.telemetry import FIRMWARE_VERSIONS, GPS_BOUNDS, TelemetryGenerator, _rf
+from app.models.device_orm import Device
 from app.models.telemetry import (
+    DeviceProfile,
     DeviceStats,
     DeviceType,
     ScenarioType,
@@ -18,6 +29,47 @@ from app.models.telemetry import (
 )
 
 router = APIRouter(prefix="/api/v1")
+
+GPS_CAPABLE_DEVICE_TYPES = {"smartwatch", "smartphone"}
+
+SCENARIO_DESCRIPTIONS = {
+    ScenarioType.WORKOUT: "Elevated HR, high steps, increased temperature",
+    ScenarioType.SLEEP: "Low HR, high HRV, sleep metrics populated",
+    ScenarioType.REST: "Normal resting vitals, minimal activity",
+    ScenarioType.EMERGENCY: "Out-of-range vitals: tachycardia, low SpO2, fever",
+    ScenarioType.RANDOM: "Fully random across all valid ranges",
+}
+
+PROTOCOL_NOTES = {
+    TransportProtocol.HTTP: "Real HTTP POST to endpoint URL",
+    TransportProtocol.MQTT: "Mock MQTT publish (no broker required)",
+    TransportProtocol.WEBSOCKET: "Mock WebSocket frame send",
+    TransportProtocol.GRPC: "Mock gRPC unary call",
+}
+
+
+def _build_endpoint_config(name: str, url: str, protocol: str, enabled: bool) -> dict:
+    return {
+        "name": name,
+        "url": url,
+        "protocol": protocol,
+        "enabled": enabled,
+        "headers": {},
+    }
+
+
+def _parse_default_http_endpoints(raw_value: str) -> list[dict]:
+    endpoints: list[dict] = []
+    for pair in filter(None, (item.strip() for item in raw_value.split(","))):
+        if "::" not in pair:
+            continue
+        name, url = pair.split("::", 1)
+        endpoints.append(_build_endpoint_config(name.strip(), url.strip(), "http", True))
+    return endpoints
+
+
+def _db_unavailable(exc: Exception) -> HTTPException:
+    return HTTPException(503, f"Database unavailable: {exc}")
 
 
 # ── Session control ──────────────────────────────────────────────────────────
@@ -85,94 +137,46 @@ async def get_device_types():
 
 @router.get("/meta/scenarios")
 async def get_scenarios():
-    descriptions = {
-        ScenarioType.WORKOUT: "Elevated HR, high steps, increased temperature",
-        ScenarioType.SLEEP: "Low HR, high HRV, sleep metrics populated",
-        ScenarioType.REST: "Normal resting vitals, minimal activity",
-        ScenarioType.EMERGENCY: "Out-of-range vitals: tachycardia, low SpO2, fever",
-        ScenarioType.RANDOM: "Fully random across all valid ranges",
-    }
     return [
-        {"value": s.value, "label": s.value.title(), "description": descriptions[s]}
-        for s in ScenarioType
+        {
+            "value": scenario.value,
+            "label": scenario.value.title(),
+            "description": SCENARIO_DESCRIPTIONS[scenario],
+        }
+        for scenario in ScenarioType
     ]
 
 
 @router.get("/meta/protocols")
 async def get_protocols():
-    notes = {
-        TransportProtocol.HTTP: "Real HTTP POST to endpoint URL",
-        TransportProtocol.MQTT: "Mock MQTT publish (no broker required)",
-        TransportProtocol.WEBSOCKET: "Mock WebSocket frame send",
-        TransportProtocol.GRPC: "Mock gRPC unary call",
-    }
     return [
-        {"value": p.value, "label": p.value.upper(), "note": notes[p]} for p in TransportProtocol
+        {"value": protocol.value, "label": protocol.value.upper(), "note": PROTOCOL_NOTES[protocol]}
+        for protocol in TransportProtocol
     ]
 
 
 @router.get("/meta/defaults")
 async def get_defaults():
     """Return simulator defaults read from environment variables."""
-    import os
-
-    endpoints = []
-
-    # HTTP endpoints — comma-separated "name::url" pairs
-    for pair in filter(
-        None, (p.strip() for p in os.getenv("DEFAULT_HTTP_ENDPOINTS", "").split(","))
-    ):
-        if "::" in pair:
-            name, url = pair.split("::", 1)
-            endpoints.append(
-                {
-                    "name": name.strip(),
-                    "url": url.strip(),
-                    "protocol": "http",
-                    "enabled": True,
-                    "headers": {},
-                }
-            )
+    endpoints = _parse_default_http_endpoints(os.getenv("DEFAULT_HTTP_ENDPOINTS", ""))
 
     # MQTT
     mqtt_url = os.getenv("DEFAULT_MQTT_BROKER_URL", "")
     mqtt_topic = os.getenv("DEFAULT_MQTT_TOPIC", "health/telemetry")
     if mqtt_url:
-        endpoints.append(
-            {
-                "name": f"mqtt/{mqtt_topic}",
-                "url": mqtt_url,
-                "protocol": "mqtt",
-                "enabled": False,
-                "headers": {},
-            }
-        )
+        endpoints.append(_build_endpoint_config(f"mqtt/{mqtt_topic}", mqtt_url, "mqtt", False))
 
     # WebSocket
     ws_url = os.getenv("DEFAULT_WS_URL", "")
     if ws_url:
-        endpoints.append(
-            {
-                "name": "local-ws",
-                "url": ws_url,
-                "protocol": "websocket",
-                "enabled": False,
-                "headers": {},
-            }
-        )
+        endpoints.append(_build_endpoint_config("local-ws", ws_url, "websocket", False))
 
     # gRPC
     grpc_host = os.getenv("DEFAULT_GRPC_HOST", "")
     grpc_port = os.getenv("DEFAULT_GRPC_PORT", "50051")
     if grpc_host:
         endpoints.append(
-            {
-                "name": "local-grpc",
-                "url": f"grpc://{grpc_host}:{grpc_port}",
-                "protocol": "grpc",
-                "enabled": False,
-                "headers": {},
-            }
+            _build_endpoint_config("local-grpc", f"grpc://{grpc_host}:{grpc_port}", "grpc", False)
         )
 
     return {
@@ -208,11 +212,6 @@ async def get_send_modes():
 async def get_device_stats():
     """Return device counts broken down by type."""
     try:
-        from sqlalchemy import func, select
-
-        from app.db import async_session_factory
-        from app.models.device_orm import Device
-
         async with async_session_factory() as db:
             rows = (
                 await db.execute(
@@ -225,26 +224,13 @@ async def get_device_stats():
         by_type = {r[0]: r[1] for r in rows}
         return DeviceStats(total=sum(by_type.values()), by_type=by_type)
     except Exception as exc:
-        from fastapi import HTTPException
-
-        raise HTTPException(503, f"Database unavailable: {exc}") from exc
+        raise _db_unavailable(exc) from exc
 
 
 @router.post("/devices/seed", response_model=SeedDevicesResponse)
 async def seed_devices(body: SeedDevicesRequest):
     """Add new devices of the given type to the registry."""
-    import random
-    import uuid
-
     try:
-        from sqlalchemy import func, select
-
-        from app.db import async_session_factory
-        from app.generators.telemetry import FIRMWARE_VERSIONS, GPS_BOUNDS, _rf
-        from app.models.device_orm import Device
-
-        GPS_CAPABLE = {"smartwatch", "smartphone"}
-
         async with async_session_factory() as db:
             # Reuse existing user pool or create new users at 1:4 ratio
             existing_users = (
@@ -262,7 +248,7 @@ async def seed_devices(body: SeedDevicesRequest):
                 user_pool = user_pool + new_users
 
             dtype = body.device_type.value
-            has_gps = dtype in GPS_CAPABLE
+            has_gps = dtype in GPS_CAPABLE_DEVICE_TYPES
 
             records = []
             for _ in range(body.count):
@@ -292,9 +278,7 @@ async def seed_devices(body: SeedDevicesRequest):
             message=f"Created {body.count} {dtype} devices. Total active: {total}.",
         )
     except Exception as exc:
-        from fastapi import HTTPException
-
-        raise HTTPException(503, f"Database unavailable: {exc}") from exc
+        raise _db_unavailable(exc) from exc
 
 
 # ── Quick generate (preview without sending) ─────────────────────────────────
@@ -307,8 +291,6 @@ async def preview_event(
     protocol: TransportProtocol = TransportProtocol.HTTP,
 ):
     """Generate a single event without sending — useful for UI preview."""
-    from app.generators.telemetry import TelemetryGenerator
-    from app.models.telemetry import DeviceProfile
 
     gen = TelemetryGenerator(
         device_profiles=[DeviceProfile(device_type=device_type, count=1)],

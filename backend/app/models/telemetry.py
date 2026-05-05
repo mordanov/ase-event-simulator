@@ -1,3 +1,5 @@
+"""Pydantic models for telemetry payloads, sessions, and API request/response shapes."""
+
 from __future__ import annotations
 
 import uuid
@@ -5,6 +7,20 @@ from datetime import UTC, datetime
 from enum import Enum
 
 from pydantic import BaseModel, Field
+
+JsonMap = dict[str, object]
+EndpointResponse = dict[str, object]
+
+
+def _iso_timestamp() -> str:
+    """Return an ISO-8601 UTC timestamp string."""
+    return datetime.now(UTC).isoformat()
+
+
+def _uuid_str() -> str:
+    """Return a random UUID string."""
+    return str(uuid.uuid4())
+
 
 # ─── Enums ────────────────────────────────────────────────────────────────────
 
@@ -101,7 +117,7 @@ class RegistrationEvent(BaseModel):
     device_id: str
     status: str  # pending | rejected | registered
     message: str
-    timestamp: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
+    timestamp: str = Field(default_factory=_iso_timestamp)
     # Device profile — required by POST /api/v1/devices on the ingestion pipeline.
     device_type: str | None = None
     model: str | None = None
@@ -115,16 +131,16 @@ class RegistrationEvent(BaseModel):
     gender: str | None = None
     birth_date: str | None = None  # YYYY-MM-DD
     # Request/response inspection — populated after the event is sent to endpoints.
-    request_payload: dict | None = None
-    endpoint_responses: list[dict] | None = None  # [{"name", "url", "status_code", "body"}]
+    request_payload: JsonMap | None = None
+    endpoint_responses: list[EndpointResponse] | None = None
 
 
 class TelemetryEvent(BaseModel):
-    event_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    event_id: str = Field(default_factory=_uuid_str)
     device_id: str
     device_type: DeviceType
     user_id: str
-    timestamp: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
+    timestamp: str = Field(default_factory=_iso_timestamp)
     scenario: ScenarioType
     is_anomaly: bool = False
     protocol: TransportProtocol
@@ -145,8 +161,8 @@ class TelemetryEvent(BaseModel):
 
 
 class BatchPayload(BaseModel):
-    batch_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    sent_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
+    batch_id: str = Field(default_factory=_uuid_str)
+    sent_at: str = Field(default_factory=_iso_timestamp)
     event_count: int
     events: list[TelemetryEvent]
 
@@ -168,7 +184,7 @@ class DeviceProfile(BaseModel):
 
 
 class SessionConfig(BaseModel):
-    session_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    session_id: str = Field(default_factory=_uuid_str)
     devices: list[DeviceProfile]
     scenario: ScenarioType
     send_mode: SendMode
@@ -212,7 +228,7 @@ class ActivityEvent(BaseModel):
     )
     device_id: str
     status: str  # ok|error|anomaly|registered|rejected|pending
-    data: dict = Field(default_factory=dict)
+    data: JsonMap = Field(default_factory=dict)
 
 
 class RecommendationLog(BaseModel):
@@ -222,8 +238,8 @@ class RecommendationLog(BaseModel):
     balance_before: int
     balance_after: int
     credits_spent: int
-    request: dict
-    response: dict | None = None
+    request: JsonMap
+    response: JsonMap | None = None
     error: str | None = None
 
 

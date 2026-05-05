@@ -12,7 +12,7 @@ With a real AWS IoT Core setup:
   - Enable JITR / set up a registration rule + Lambda
   - Set CERT_APPROVAL_DELAY_SECONDS to match Lambda processing time (~2-10s)
 
-Devices that are already registered skip all steps and proceed immediately.
+Already-registered devices skip these steps and proceed immediately.
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ import os
 from collections.abc import Callable
 from datetime import UTC, datetime
 
+import boto3
 from sqlalchemy import select, update
 
 from app.db import async_session_factory
@@ -54,7 +55,7 @@ REG_MODE_JITR = "jitr"
 # ─── Event callback type ──────────────────────────────────────────────────────
 
 RegistrationCallback = Callable[[str, str, str], None]
-"""callback(device_id, status, message) — called at each registration step."""
+"""Callback signature: (device_id, status, message)."""
 
 
 # ─── Core registration logic ──────────────────────────────────────────────────
@@ -72,12 +73,7 @@ async def register_devices(
     """
     fingerprints: dict[str, str] = {}
 
-    async with async_session_factory() as db:
-        rows = (
-            (await db.execute(select(Device).where(Device.device_id.in_(device_ids))))
-            .scalars()
-            .all()
-        )
+    rows = await _load_devices_by_ids(device_ids)
 
     # Partition: already registered vs needs registration
     already_registered = [d for d in rows if d.registration_status == STATUS_REGISTERED]
@@ -104,21 +100,7 @@ async def register_devices(
             f"cert generated (serial={dev_cert.serial[:16]}…), submitting to registration authority",
         )
 
-    async with async_session_factory() as db:
-        for d in needs_registration:
-            dc = cert_map[d.device_id]
-            await db.execute(
-                update(Device)
-                .where(Device.device_id == d.device_id)
-                .values(
-                    cert_pem=dc.cert_pem,
-                    cert_key_pem=dc.key_pem,
-                    cert_serial=dc.serial,
-                    cert_fingerprint=dc.fingerprint,
-                    registration_status=STATUS_PENDING,
-                )
-            )
-        await db.commit()
+    await _persist_pending_certs(needs_registration, cert_map)
 
     # In cloud mode, registration behavior is controlled explicitly via
     # AWS_IOT_REGISTRATION_MODE=direct|jitr.
@@ -161,15 +143,7 @@ async def register_devices(
     await asyncio.sleep(CERT_APPROVAL_DELAY)
 
     # ── Phase 3: second connection → accepted, mark registered ───────────────
-    now = datetime.now(UTC)
-    async with async_session_factory() as db:
-        for d in needs_registration:
-            await db.execute(
-                update(Device)
-                .where(Device.device_id == d.device_id)
-                .values(registration_status=STATUS_REGISTERED, registered_at=now)
-            )
-        await db.commit()
+    await _mark_registered([device.device_id for device in needs_registration])
 
     for d in needs_registration:
         dc = cert_map[d.device_id]
@@ -199,9 +173,49 @@ def _get_iot_registration_mode() -> str:
     return mode
 
 
-def _default_iot_policy_document() -> str:
-    import boto3
+async def _load_devices_by_ids(device_ids: list[str]) -> list[Device]:
+    async with async_session_factory() as db:
+        return (
+            (await db.execute(select(Device).where(Device.device_id.in_(device_ids))))
+            .scalars()
+            .all()
+        )
 
+
+async def _persist_pending_certs(
+    devices: list[Device],
+    cert_map: dict[str, DeviceCert],
+) -> None:
+    async with async_session_factory() as db:
+        for device in devices:
+            cert = cert_map[device.device_id]
+            await db.execute(
+                update(Device)
+                .where(Device.device_id == device.device_id)
+                .values(
+                    cert_pem=cert.cert_pem,
+                    cert_key_pem=cert.key_pem,
+                    cert_serial=cert.serial,
+                    cert_fingerprint=cert.fingerprint,
+                    registration_status=STATUS_PENDING,
+                )
+            )
+        await db.commit()
+
+
+async def _mark_registered(device_ids: list[str], when: datetime | None = None) -> None:
+    registered_at = when or datetime.now(UTC)
+    async with async_session_factory() as db:
+        for device_id in device_ids:
+            await db.execute(
+                update(Device)
+                .where(Device.device_id == device_id)
+                .values(registration_status=STATUS_REGISTERED, registered_at=registered_at)
+            )
+        await db.commit()
+
+
+def _default_iot_policy_document() -> str:
     session = boto3.session.Session()
     region = session.region_name or os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION")
     if not region:
@@ -234,8 +248,6 @@ def _default_iot_policy_document() -> str:
 
 
 def _provision_device_in_aws(device_id: str, cert_pem: str) -> None:
-    import boto3
-
     iot = boto3.client("iot")
 
     # Register CA-signed client cert explicitly so thing creation does not depend on
@@ -268,7 +280,6 @@ async def _register_devices_in_aws(
     cert_map: dict[str, DeviceCert],
     on_event: RegistrationCallback | None,
 ) -> None:
-    now = datetime.now(UTC)
     failed: list[str] = []
 
     for d in devices:
@@ -282,13 +293,7 @@ async def _register_devices_in_aws(
             )
             await asyncio.to_thread(_provision_device_in_aws, d.device_id, dc.cert_pem)
 
-            async with async_session_factory() as db:
-                await db.execute(
-                    update(Device)
-                    .where(Device.device_id == d.device_id)
-                    .values(registration_status=STATUS_REGISTERED, registered_at=now)
-                )
-                await db.commit()
+            await _mark_registered([d.device_id])
 
             _emit(on_event, d.device_id, STATUS_REGISTERED, "registered in AWS IoT Core")
         except Exception as exc:

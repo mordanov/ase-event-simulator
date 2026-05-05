@@ -1,10 +1,10 @@
 """
-X.509 certificate management for device authentication.
+X.509 certificate management for simulated device authentication.
 
 CA loading priority:
   1. CA_CERT_PEM / CA_KEY_PEM  — inline PEM in environment variables
   2. CA_CERT_FILE / CA_KEY_FILE — file paths
-  3. Auto-generate self-signed CA (useful for local testing without AWS IoT)
+  3. Auto-generate a self-signed CA (useful for local testing without AWS IoT)
 
 Device certs are RSA-2048, signed by the CA, valid for CERT_VALIDITY_DAYS days.
 CN = device_id, so AWS IoT Core policies can reference it directly.
@@ -13,8 +13,11 @@ CN = device_id, so AWS IoT Core policies can reference it directly.
 from __future__ import annotations
 
 import datetime
+import logging
 import os
+from dataclasses import dataclass
 from functools import lru_cache
+from pathlib import Path
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
@@ -27,6 +30,7 @@ from app.services.runtime_mode import is_cloud_mode
 CERT_VALIDITY_DAYS = int(os.getenv("CERT_VALIDITY_DAYS", "365"))
 CERT_COUNTRY = os.getenv("DEVICE_CERT_COUNTRY", "US")
 CERT_ORG = os.getenv("DEVICE_CERT_ORG", "HealthSimulator")
+logger = logging.getLogger(__name__)
 
 
 # ─── CA loading ───────────────────────────────────────────────────────────────
@@ -36,9 +40,11 @@ def _pem_from_env_or_file(pem_var: str, file_var: str) -> str | None:
     raw = os.getenv(pem_var, "").strip()
     if raw:
         return raw.replace("\\n", "\n")
+
     path = os.getenv(file_var, "").strip()
-    if path and os.path.exists(path):
-        return open(path).read()
+    if path and Path(path).exists():
+        return Path(path).read_text()
+
     return None
 
 
@@ -83,10 +89,8 @@ def load_ca() -> tuple[x509.Certificate, RSAPrivateKey]:
             "Cloud mode requires CA_CERT_PEM/CA_KEY_PEM (for example from /health-simulator/ca-cert)."
         )
 
-    # Fallback: auto-generate (emits a warning — not suitable for real AWS IoT)
-    import logging
-
-    logging.getLogger(__name__).warning(
+    # Fallback: auto-generate (not suitable for real AWS IoT)
+    logger.warning(
         "CA_CERT_PEM/CA_CERT_FILE not set — using auto-generated self-signed CA. "
         "Register this CA with AWS IoT Core for real mTLS."
     )
@@ -101,17 +105,12 @@ def ca_cert_pem() -> str:
 # ─── Device cert generation ───────────────────────────────────────────────────
 
 
+@dataclass(frozen=True, slots=True)
 class DeviceCert:
     cert_pem: str
     key_pem: str
     fingerprint: str  # hex SHA-256
     serial: str  # decimal serial number
-
-    def __init__(self, cert_pem: str, key_pem: str, fingerprint: str, serial: str):
-        self.cert_pem = cert_pem
-        self.key_pem = key_pem
-        self.fingerprint = fingerprint
-        self.serial = serial
 
 
 def generate_device_cert(device_id: str) -> DeviceCert:

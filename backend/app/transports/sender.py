@@ -1,10 +1,10 @@
 """
-Transport layer.
+Transport implementations used by simulation sessions.
 
 Each transport implements send_event() and send_batch().
-MQTT / WebSocket / gRPC are *mock* senders — they simulate the protocol
-handshake and payload serialisation but do not require a real broker.
-HTTP is fully real (fires actual HTTP requests to configured endpoints).
+MQTT, WebSocket, and gRPC include mock senders that simulate protocol
+handshake and payload serialization without requiring a real broker.
+HTTP transport performs real outbound requests to configured endpoints.
 """
 
 from __future__ import annotations
@@ -36,6 +36,10 @@ from app.models.telemetry import (
 from app.services.runtime_mode import is_cloud_mode
 
 logger = logging.getLogger(__name__)
+
+HTTP_TIMEOUT_SECONDS = 10.0
+MAX_RECENT_ENDPOINT_ERRORS = 50
+MAX_LATENCY_SAMPLES = 200
 
 
 class SendResult(TypedDict, total=False):
@@ -87,13 +91,13 @@ class BaseTransport(ABC):
                 status_code=code,
             )
             self.status.recent_errors.append(entry)
-            if len(self.status.recent_errors) > 50:
-                self.status.recent_errors = self.status.recent_errors[-50:]
+            if len(self.status.recent_errors) > MAX_RECENT_ENDPOINT_ERRORS:
+                self.status.recent_errors = self.status.recent_errors[-MAX_RECENT_ENDPOINT_ERRORS:]
         if code:
             self.status.last_status_code = code
         self._latencies.append(latency_ms)
-        if len(self._latencies) > 200:
-            self._latencies = self._latencies[-200:]
+        if len(self._latencies) > MAX_LATENCY_SAMPLES:
+            self._latencies = self._latencies[-MAX_LATENCY_SAMPLES:]
         self.status.avg_latency_ms = round(sum(self._latencies) / len(self._latencies), 2)
 
     @abstractmethod
@@ -127,6 +131,44 @@ class HTTPTransport(BaseTransport):
         self._tmpdir: str | None = None
         self.last_credit_results: list[dict] = []  # populated after each send_event/send_batch
 
+    def _build_default_headers(self) -> dict[str, str]:
+        return {"Content-Type": "application/json", **self.endpoint.headers}
+
+    def _parse_response_body(self, response: httpx.Response) -> dict | None:
+        try:
+            body = response.json()
+        except Exception:
+            return None
+
+        if response.status_code == 200 and body:
+            self.last_credit_results.extend(body.get("credit_results", []))
+        return body
+
+    def _result_from_response(self, response: httpx.Response, latency_ms: float) -> SendResult:
+        ok = response.status_code < 400
+        error = "" if ok else f"HTTP {response.status_code}: {response.text[:300]}"
+        self._record(latency_ms, ok, code=response.status_code, err=error)
+        return {
+            "ok": ok,
+            "status_code": response.status_code,
+            "body": self._parse_response_body(response),
+            "error": error or None,
+        }
+
+    async def _post_payload(
+        self,
+        url: str,
+        payload: str,
+        *,
+        fingerprint: str | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> tuple[SendResult, float]:
+        client = await self._get_client(fingerprint)
+        t0 = time.perf_counter()
+        response = await client.post(url, content=payload, headers=headers)
+        latency_ms = (time.perf_counter() - t0) * 1000
+        return self._result_from_response(response, latency_ms), latency_ms
+
     def register_device_cert(self, fingerprint: str, cert_pem: str, key_pem: str) -> None:
         """Store device cert on disk so httpx can use it for mTLS."""
         if not self._tmpdir:
@@ -145,8 +187,8 @@ class HTTPTransport(BaseTransport):
             if fingerprint not in self._mtls_clients or self._mtls_clients[fingerprint].is_closed:
                 cert_path, key_path = self._cert_files[fingerprint]
                 self._mtls_clients[fingerprint] = httpx.AsyncClient(
-                    timeout=httpx.Timeout(10.0),
-                    headers={"Content-Type": "application/json", **self.endpoint.headers},
+                    timeout=httpx.Timeout(HTTP_TIMEOUT_SECONDS),
+                    headers=self._build_default_headers(),
                     cert=(cert_path, key_path),
                     verify=False,  # self-signed CA; set verify=ca_cert_path for AWS IoT Core
                 )
@@ -154,30 +196,21 @@ class HTTPTransport(BaseTransport):
 
         if self._client is None or self._client.is_closed:
             self._client = httpx.AsyncClient(
-                timeout=httpx.Timeout(10.0),
-                headers={"Content-Type": "application/json", **self.endpoint.headers},
+                timeout=httpx.Timeout(HTTP_TIMEOUT_SECONDS),
+                headers=self._build_default_headers(),
             )
         return self._client
 
     async def send_event(self, event: TelemetryEvent) -> SendResult:
-        client = await self._get_client(event.cert_fingerprint)
-        t0 = time.perf_counter()
         try:
-            resp = await client.post(self.endpoint.url, content=event.model_dump_json())
-            latency = (time.perf_counter() - t0) * 1000
-            ok = resp.status_code < 400
-            err = "" if ok else f"HTTP {resp.status_code}: {resp.text[:300]}"
-            self._record(latency, ok, code=resp.status_code, err=err)
-            body: dict | None = None
-            try:
-                body = resp.json()
-                if resp.status_code == 200 and body:
-                    self.last_credit_results.extend(body.get("credit_results", []))
-            except Exception:
-                pass
-            return {"ok": ok, "status_code": resp.status_code, "body": body, "error": err or None}
+            result, _ = await self._post_payload(
+                self.endpoint.url,
+                event.model_dump_json(),
+                fingerprint=event.cert_fingerprint,
+            )
+            return result
         except Exception as exc:
-            latency = (time.perf_counter() - t0) * 1000
+            latency = 0.0
             self._record(latency, False, err=str(exc))
             logger.warning("HTTP send_event failed [%s]: %s", self.endpoint.url, exc)
             return {"ok": False, "status_code": None, "body": None, "error": str(exc)}
@@ -193,9 +226,9 @@ class HTTPTransport(BaseTransport):
         payload = build_registration_payload(event)
 
         base = {"name": self.endpoint.name, "url": reg_url}
-        client = await self._get_client()
-        t0 = time.perf_counter()
         try:
+            client = await self._get_client()
+            t0 = time.perf_counter()
             resp = await client.post(
                 reg_url,
                 content=json.dumps(payload),
@@ -214,24 +247,15 @@ class HTTPTransport(BaseTransport):
     async def send_batch(self, batch: BatchPayload) -> SendResult:
         # Use cert of first event in batch (all events in a batch come from one session)
         fingerprint = batch.events[0].cert_fingerprint if batch.events else None
-        client = await self._get_client(fingerprint)
-        t0 = time.perf_counter()
         try:
-            resp = await client.post(self.endpoint.url, content=batch.model_dump_json())
-            latency = (time.perf_counter() - t0) * 1000
-            ok = resp.status_code < 400
-            err = "" if ok else f"HTTP {resp.status_code}: {resp.text[:300]}"
-            self._record(latency, ok, code=resp.status_code, err=err)
-            body: dict | None = None
-            try:
-                body = resp.json()
-                if resp.status_code == 200 and body:
-                    self.last_credit_results.extend(body.get("credit_results", []))
-            except Exception:
-                pass
-            return {"ok": ok, "status_code": resp.status_code, "body": body, "error": err or None}
+            result, _ = await self._post_payload(
+                self.endpoint.url,
+                batch.model_dump_json(),
+                fingerprint=fingerprint,
+            )
+            return result
         except Exception as exc:
-            latency = (time.perf_counter() - t0) * 1000
+            latency = 0.0
             self._record(latency, False, err=str(exc))
             logger.warning("HTTP send_batch failed [%s]: %s", self.endpoint.url, exc)
             return {"ok": False, "status_code": None, "body": None, "error": str(exc)}

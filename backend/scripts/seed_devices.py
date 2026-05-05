@@ -8,10 +8,10 @@ Usage (from /app directory inside the container or local venv):
 
 from __future__ import annotations
 
-import datetime as _dt
 import os
 import random
 import uuid
+from datetime import date
 
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
@@ -29,7 +29,7 @@ SEED_COUNT = int(os.getenv("SEED_DEVICE_COUNT", "1000"))
 _raw_url = os.getenv("DATABASE_URL", "sqlite+aiosqlite:////app/simulator.db")
 DATABASE_URL = _raw_url.replace("+aiosqlite", "").replace("+asyncpg", "+psycopg2")
 
-_CURRENT_YEAR = _dt.date.today().year
+CURRENT_YEAR = date.today().year
 
 # Device type distribution (must sum to 1.0)
 TYPE_DISTRIBUTION = {
@@ -80,16 +80,28 @@ def _make_user_pool(size: int) -> list[str]:
     return [f"user-{uuid.uuid4().hex[:6]}" for _ in range(size)]
 
 
-def _make_device(device_type: str, user_id: str) -> dict:
-    short = uuid.uuid4().hex[:8]
-    has_gps = device_type in GPS_CAPABLE
-    gender = random.choices(GENDER_CHOICES, weights=GENDER_WEIGHTS, k=1)[0]
+def _random_birth_date(gender: str) -> str:
     age = random.randint(*AGE_RANGE[gender])
-    birth_year = _CURRENT_YEAR - age
+    birth_year = CURRENT_YEAR - age
     birth_month = random.randint(1, 12)
     birth_day = random.randint(1, 28)
+    return f"{birth_year:04d}-{birth_month:02d}-{birth_day:02d}"
+
+
+def _random_biometrics(gender: str) -> tuple[float, float]:
+    height_cm = round(random.uniform(*HEIGHT_RANGE[gender]), 1)
+    weight_kg = round(random.uniform(*WEIGHT_RANGE[gender]), 1)
+    return height_cm, weight_kg
+
+
+def _make_device(device_type: str, user_id: str) -> dict:
+    device_suffix = uuid.uuid4().hex[:8]
+    has_gps = device_type in GPS_CAPABLE
+    gender = random.choices(GENDER_CHOICES, weights=GENDER_WEIGHTS, k=1)[0]
+    height_cm, weight_kg = _random_biometrics(gender)
+
     return {
-        "device_id": f"{device_type}-{short}",
+        "device_id": f"{device_type}-{device_suffix}",
         "device_type": device_type,
         "model": DEVICE_MODELS[device_type],
         "os": DEVICE_OS[device_type],
@@ -97,10 +109,10 @@ def _make_device(device_type: str, user_id: str) -> dict:
         "firmware_version": random.choice(FIRMWARE_VERSIONS[device_type]),
         "gps_lat": _rf(*GPS_BOUNDS["lat"]) if has_gps else None,
         "gps_lon": _rf(*GPS_BOUNDS["lon"]) if has_gps else None,
-        "height_cm": round(random.uniform(*HEIGHT_RANGE[gender]), 1),
-        "weight_kg": round(random.uniform(*WEIGHT_RANGE[gender]), 1),
+        "height_cm": height_cm,
+        "weight_kg": weight_kg,
         "gender": gender,
-        "birth_date": f"{birth_year:04d}-{birth_month:02d}-{birth_day:02d}",
+        "birth_date": _random_birth_date(gender),
         "is_active": True,
     }
 

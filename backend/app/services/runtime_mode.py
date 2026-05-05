@@ -1,3 +1,5 @@
+"""Runtime mode detection helpers for local and cloud deployments."""
+
 from __future__ import annotations
 
 import os
