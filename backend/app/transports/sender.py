@@ -19,7 +19,7 @@ import time
 import uuid
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Optional, TypedDict
 from urllib.parse import urlparse
 
 import httpx
@@ -36,6 +36,13 @@ from app.models.telemetry import (
 from app.services.runtime_mode import is_cloud_mode
 
 logger = logging.getLogger(__name__)
+
+
+class SendResult(TypedDict, total=False):
+    ok: bool
+    status_code: Optional[int]
+    body: Optional[dict]
+    error: Optional[str]
 
 
 def build_registration_payload(event: RegistrationEvent) -> dict:
@@ -89,11 +96,11 @@ class BaseTransport(ABC):
         self.status.avg_latency_ms = round(sum(self._latencies) / len(self._latencies), 2)
 
     @abstractmethod
-    async def send_event(self, event: TelemetryEvent) -> bool:
+    async def send_event(self, event: TelemetryEvent) -> SendResult:
         ...
 
     @abstractmethod
-    async def send_batch(self, batch: BatchPayload) -> bool:
+    async def send_batch(self, batch: BatchPayload) -> SendResult:
         ...
 
     async def send_registration_event(self, event: RegistrationEvent) -> dict:
@@ -148,7 +155,7 @@ class HTTPTransport(BaseTransport):
             )
         return self._client
 
-    async def send_event(self, event: TelemetryEvent) -> bool:
+    async def send_event(self, event: TelemetryEvent) -> SendResult:
         client = await self._get_client(event.cert_fingerprint)
         t0 = time.perf_counter()
         try:
@@ -157,17 +164,19 @@ class HTTPTransport(BaseTransport):
             ok = resp.status_code < 400
             err = "" if ok else f"HTTP {resp.status_code}: {resp.text[:300]}"
             self._record(latency, ok, code=resp.status_code, err=err)
-            if ok:
-                try:
-                    self.last_credit_results.extend(resp.json().get("credit_results", []))
-                except Exception:
-                    pass
-            return ok
+            body: Optional[dict] = None
+            try:
+                body = resp.json()
+                if ok and body:
+                    self.last_credit_results.extend(body.get("credit_results", []))
+            except Exception:
+                pass
+            return {"ok": ok, "status_code": resp.status_code, "body": body, "error": err or None}
         except Exception as exc:
             latency = (time.perf_counter() - t0) * 1000
             self._record(latency, False, err=str(exc))
             logger.warning("HTTP send_event failed [%s]: %s", self.endpoint.url, exc)
-            return False
+            return {"ok": False, "status_code": None, "body": None, "error": str(exc)}
 
     async def send_registration_event(self, event: RegistrationEvent) -> dict:
         # Derive the ingestion pipeline device-registration URL from the base host.
@@ -198,7 +207,7 @@ class HTTPTransport(BaseTransport):
             logger.warning("HTTP send_registration_event failed [%s]: %s", reg_url, exc)
             return {**base, "status_code": None, "body": str(exc)}
 
-    async def send_batch(self, batch: BatchPayload) -> bool:
+    async def send_batch(self, batch: BatchPayload) -> SendResult:
         # Use cert of first event in batch (all events in a batch come from one session)
         fingerprint = batch.events[0].cert_fingerprint if batch.events else None
         client = await self._get_client(fingerprint)
@@ -207,18 +216,21 @@ class HTTPTransport(BaseTransport):
             resp = await client.post(self.endpoint.url, content=batch.model_dump_json())
             latency = (time.perf_counter() - t0) * 1000
             ok = resp.status_code < 400
-            self._record(latency, ok, code=resp.status_code)
-            if ok:
-                try:
-                    self.last_credit_results.extend(resp.json().get("credit_results", []))
-                except Exception:
-                    pass
-            return ok
+            err = "" if ok else f"HTTP {resp.status_code}: {resp.text[:300]}"
+            self._record(latency, ok, code=resp.status_code, err=err)
+            body: Optional[dict] = None
+            try:
+                body = resp.json()
+                if ok and body:
+                    self.last_credit_results.extend(body.get("credit_results", []))
+            except Exception:
+                pass
+            return {"ok": ok, "status_code": resp.status_code, "body": body, "error": err or None}
         except Exception as exc:
             latency = (time.perf_counter() - t0) * 1000
             self._record(latency, False, err=str(exc))
             logger.warning("HTTP send_batch failed [%s]: %s", self.endpoint.url, exc)
-            return False
+            return {"ok": False, "status_code": None, "body": None, "error": str(exc)}
 
     async def close(self):
         if self._client and not self._client.is_closed:
@@ -355,20 +367,21 @@ class AWSIoTMQTTTransport(BaseTransport):
 
     # ── send ──────────────────────────────────────────────────────────────────
 
-    async def send_event(self, event: TelemetryEvent) -> bool:
+    async def send_event(self, event: TelemetryEvent) -> SendResult:
         client = await self._get_mqtt_client(event.device_id)
         if client is None:
             if is_cloud_mode():
                 self._record(0.0, False, err="Cloud mode requires real MQTT client + per-device cert")
-                return False
+                return {"ok": False, "status_code": None, "body": None, "error": "Cloud mode requires real MQTT client + per-device cert"}
             return await self._mock_publish(event.model_dump_json(), event.device_id)
         return await self._publish(client, event.device_id, event.model_dump_json())
 
-    async def send_batch(self, batch: BatchPayload) -> bool:
+    async def send_batch(self, batch: BatchPayload) -> SendResult:
         results = [await self.send_event(ev) for ev in batch.events]
-        return all(results)
+        ok = all(r.get("ok", False) for r in results)
+        return {"ok": ok, "status_code": None, "body": None, "error": None}
 
-    async def _publish(self, client, device_id: str, payload: str) -> bool:
+    async def _publish(self, client, device_id: str, payload: str) -> SendResult:
         from awscrt import mqtt5 as crt_mqtt5
         topic = f"{self._topic_prefix}/{device_id}"
         t0 = time.perf_counter()
@@ -383,14 +396,14 @@ class AWSIoTMQTTTransport(BaseTransport):
             latency = (time.perf_counter() - t0) * 1000
             self._record(latency, True, code=0)
             logger.debug("MQTT5 publish → %s (%d bytes)", topic, len(payload))
-            return True
+            return {"ok": True, "status_code": None, "body": None, "error": None}
         except Exception as exc:
             latency = (time.perf_counter() - t0) * 1000
             self._record(latency, False, err=str(exc))
             logger.warning("MQTT5 publish failed [%s]: %s", device_id, exc)
-            return False
+            return {"ok": False, "status_code": None, "body": None, "error": str(exc)}
 
-    async def _mock_publish(self, payload: str, device_id: str = "") -> bool:
+    async def _mock_publish(self, payload: str, device_id: str = "") -> SendResult:
         """Latency-realistic mock when no cert / SDK available."""
         t0 = time.perf_counter()
         await asyncio.sleep(random.uniform(0.001, 0.008))
@@ -398,7 +411,7 @@ class AWSIoTMQTTTransport(BaseTransport):
         ok = random.random() > 0.005
         self._record(latency, ok, code=0 if ok else None)
         logger.debug("MQTT mock → %s/%s (%d bytes)", self._topic_prefix, device_id, len(payload))
-        return ok
+        return {"ok": ok, "status_code": None, "body": None, "error": None}
 
     # ── cleanup ───────────────────────────────────────────────────────────────
 
@@ -423,20 +436,20 @@ class WebSocketMockTransport(BaseTransport):
     """
     protocol = TransportProtocol.WEBSOCKET
 
-    async def send_event(self, event: TelemetryEvent) -> bool:
+    async def send_event(self, event: TelemetryEvent) -> SendResult:
         return await self._mock_send(event.model_dump_json())
 
-    async def send_batch(self, batch: BatchPayload) -> bool:
+    async def send_batch(self, batch: BatchPayload) -> SendResult:
         return await self._mock_send(batch.model_dump_json())
 
-    async def _mock_send(self, payload: str) -> bool:
+    async def _mock_send(self, payload: str) -> SendResult:
         t0 = time.perf_counter()
         await asyncio.sleep(random.uniform(0.002, 0.012))
         latency = (time.perf_counter() - t0) * 1000
         ok = random.random() > 0.003
         self._record(latency, ok)
         logger.debug("WS mock send → %s (%d bytes) ok=%s", self.endpoint.url, len(payload), ok)
-        return ok
+        return {"ok": ok, "status_code": None, "body": None, "error": None}
 
 
 # ─── gRPC mock ────────────────────────────────────────────────────────────────
@@ -449,13 +462,13 @@ class GRPCMockTransport(BaseTransport):
     """
     protocol = TransportProtocol.GRPC
 
-    async def send_event(self, event: TelemetryEvent) -> bool:
+    async def send_event(self, event: TelemetryEvent) -> SendResult:
         return await self._mock_call(event.model_dump_json(), "IngestEvent")
 
-    async def send_batch(self, batch: BatchPayload) -> bool:
+    async def send_batch(self, batch: BatchPayload) -> SendResult:
         return await self._mock_call(batch.model_dump_json(), "IngestBatch")
 
-    async def _mock_call(self, payload: str, method: str) -> bool:
+    async def _mock_call(self, payload: str, method: str) -> SendResult:
         t0 = time.perf_counter()
         await asyncio.sleep(random.uniform(0.003, 0.015))
         latency = (time.perf_counter() - t0) * 1000
@@ -464,7 +477,7 @@ class GRPCMockTransport(BaseTransport):
         code = 0 if ok else 14
         self._record(latency, ok, code=code)
         logger.debug("gRPC mock %s → %s (%d bytes) status=%d", method, self.endpoint.url, len(payload), code)
-        return ok
+        return {"ok": ok, "status_code": code, "body": None, "error": None}
 
 
 # ─── Factory ──────────────────────────────────────────────────────────────────

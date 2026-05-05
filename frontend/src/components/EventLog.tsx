@@ -1,114 +1,5 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import type { ActivityEvent } from '../types';
-
-// ── Detail panel helpers ──────────────────────────────────────────────────────
-
-function JsonBlock({ value }: { value: unknown }) {
-  return (
-    <pre style={styles.json}>{JSON.stringify(value, null, 2)}</pre>
-  );
-}
-
-function Section({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div style={styles.section}>
-      <div style={styles.sectionLabel}>{label}</div>
-      {children}
-    </div>
-  );
-}
-
-function EventDetail({ ev }: { ev: ActivityEvent }) {
-  const d = ev.data;
-
-  switch (ev.event_type) {
-    case 'workout':
-    case 'sleep':
-    case 'rest':
-    case 'emergency':
-    case 'random': {
-      const payload = d.payload as Record<string, unknown> | undefined;
-      const statuses = d.endpoint_statuses as unknown[] | undefined;
-      return (
-        <>
-          {payload
-            ? <Section label="Request Payload"><JsonBlock value={payload} /></Section>
-            : <NoData label="request payload" />}
-          {statuses && statuses.length > 0
-            ? <Section label="Endpoint Responses"><JsonBlock value={statuses} /></Section>
-            : <NoData label="endpoint responses" />}
-        </>
-      );
-    }
-
-    case 'registration': {
-      const req = d.request;
-      const resp = d.responses;
-      return (
-        <>
-          {req
-            ? <Section label="Request"><JsonBlock value={req} /></Section>
-            : <NoData label="request" />}
-          {Array.isArray(resp) && resp.length > 0
-            ? <Section label="Endpoint Responses"><JsonBlock value={resp} /></Section>
-            : <NoData label="endpoint responses" />}
-        </>
-      );
-    }
-
-    case 'recommendation': {
-      const req = d.request;
-      const resp = d.response;
-      const err = d.error;
-      return (
-        <>
-          {req
-            ? <Section label="Request"><JsonBlock value={req} /></Section>
-            : <NoData label="request" />}
-          {resp
-            ? <Section label="Response"><JsonBlock value={resp} /></Section>
-            : err
-            ? <Section label="Error"><pre style={{ ...styles.json, color: '#f87171' }}>{String(err)}</pre></Section>
-            : <NoData label="response" />}
-          {'balance_before' in d && (
-            <Section label="Credits">
-              <JsonBlock value={{
-                balance_before: d.balance_before,
-                balance_after: d.balance_after,
-                credits_spent: d.credits_spent,
-              }} />
-            </Section>
-          )}
-        </>
-      );
-    }
-
-    case 'rewards': {
-      return (
-        <>
-          <div style={styles.noData}>Internal credit operation — no HTTP request/response</div>
-          <Section label="Credit Details"><JsonBlock value={d} /></Section>
-        </>
-      );
-    }
-
-    case 'authorisation': {
-      return (
-        <>
-          <div style={styles.noData}>Certificate operation — no HTTP request/response</div>
-          <Section label="Details"><JsonBlock value={d} /></Section>
-        </>
-      );
-    }
-
-    default:
-      return <Section label="Data"><JsonBlock value={d} /></Section>;
-  }
-}
-
-function NoData({ label }: { label: string }) {
-  return <div style={styles.noData}>No {label} available</div>;
-}
 
 interface Props {
   events: ActivityEvent[];
@@ -121,7 +12,6 @@ const TYPE_COLORS: Record<string, string> = {
   emergency:      '#f87171',
   random:         '#a78bfa',
   registration:   '#38bdf8',
-  authorisation:  '#fbbf24',
   rewards:        '#4ade80',
   recommendation: '#c084fc',
 };
@@ -148,8 +38,6 @@ function getSummary(ev: ActivityEvent): string {
     }
     case 'registration':
       return [d.model, d.firmware_version].filter(Boolean).join(' · ') as string;
-    case 'authorisation':
-      return (d.message as string | undefined) ?? '';
     case 'rewards': {
       const reward = d.activity_reward as number | undefined;
       const tier = d.reward_tier as string | undefined;
@@ -171,31 +59,202 @@ function getSummary(ev: ActivityEvent): string {
   }
 }
 
+// ── Modal ─────────────────────────────────────────────────────────────────────
+
+function JsonBlock({ value }: { value: unknown }) {
+  return <pre style={styles.json}>{JSON.stringify(value, null, 2)}</pre>;
+}
+
+function ModalSection({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div style={styles.modalSection}>
+      <div style={styles.modalSectionLabel}>{label}</div>
+      <div style={styles.modalSectionBody}>{children}</div>
+    </div>
+  );
+}
+
+function NoData({ label }: { label: string }) {
+  return <div style={styles.noData}>No {label} available</div>;
+}
+
+function EndpointResponses({ responses }: { responses: unknown[] }) {
+  if (!responses || responses.length === 0) return <NoData label="endpoint responses" />;
+  return (
+    <>
+      {(responses as Record<string, unknown>[]).map((r, i) => {
+        const code = r.status_code as number | null;
+        const ok = code != null && code < 400;
+        return (
+          <div key={i} style={styles.endpointBlock}>
+            <div style={styles.endpointHeader}>
+              <span style={styles.endpointName}>{String(r.name ?? '—')}</span>
+              <span style={{ ...styles.endpointCode, color: ok ? '#4ade80' : (r.error ? '#f87171' : '#94a3b8') }}>
+                {code != null ? `HTTP ${code}` : (r.error ? 'ERROR' : 'N/A')}
+              </span>
+            </div>
+            {r.body != null
+              ? <JsonBlock value={r.body} />
+              : r.error
+              ? <pre style={{ ...styles.json, color: '#f87171' }}>{String(r.error)}</pre>
+              : <div style={styles.noData}>No response body (mock transport)</div>}
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
+function EventModalBody({ ev }: { ev: ActivityEvent }) {
+  const d = ev.data;
+
+  switch (ev.event_type) {
+    case 'workout':
+    case 'sleep':
+    case 'rest':
+    case 'emergency':
+    case 'random': {
+      const payload = d.payload as Record<string, unknown> | undefined;
+      const responses = d.endpoint_responses as unknown[] | undefined;
+      return (
+        <>
+          <ModalSection label="Request — Telemetry Payload">
+            {payload ? <JsonBlock value={payload} /> : <NoData label="payload" />}
+          </ModalSection>
+          <ModalSection label="Response — Endpoint Results">
+            <EndpointResponses responses={responses ?? []} />
+          </ModalSection>
+        </>
+      );
+    }
+
+    case 'registration': {
+      const req = d.request;
+      const responses = d.responses as unknown[] | undefined;
+      return (
+        <>
+          <ModalSection label="Request — Device Profile">
+            {req ? <JsonBlock value={req} /> : <NoData label="request" />}
+          </ModalSection>
+          <ModalSection label="Response — Endpoint Results">
+            <EndpointResponses responses={responses ?? []} />
+          </ModalSection>
+        </>
+      );
+    }
+
+    case 'recommendation': {
+      const req = d.request;
+      const resp = d.response;
+      const err = d.error;
+      return (
+        <>
+          <ModalSection label="Request">
+            {req ? <JsonBlock value={req} /> : <NoData label="request" />}
+          </ModalSection>
+          <ModalSection label={err ? 'Error' : 'Response'}>
+            {resp
+              ? <JsonBlock value={resp} />
+              : err
+              ? <pre style={{ ...styles.json, color: '#f87171' }}>{String(err)}</pre>
+              : <NoData label="response" />}
+          </ModalSection>
+          {'balance_before' in d && (
+            <ModalSection label="Credits">
+              <JsonBlock value={{ balance_before: d.balance_before, balance_after: d.balance_after, credits_spent: d.credits_spent }} />
+            </ModalSection>
+          )}
+        </>
+      );
+    }
+
+    case 'rewards':
+      return (
+        <ModalSection label="Credit Details">
+          <div style={styles.noData}>Credited by the ingest API — no separate HTTP request/response.</div>
+          <JsonBlock value={d} />
+        </ModalSection>
+      );
+
+    default:
+      return <ModalSection label="Data"><JsonBlock value={d} /></ModalSection>;
+  }
+}
+
+function EventModal({ ev, onClose }: { ev: ActivityEvent; onClose: () => void }) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  const typeColor = TYPE_COLORS[ev.event_type] ?? '#64748b';
+  const statusColor = STATUS_COLORS[ev.status] ?? '#64748b';
+  const time = new Date(ev.timestamp).toLocaleString([], {
+    month: 'short', day: 'numeric',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  });
+
+  return (
+    <div style={styles.backdrop} onClick={onClose}>
+      <div
+        ref={dialogRef}
+        style={styles.dialog}
+        onClick={e => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div style={styles.dialogHeader}>
+          <div style={styles.dialogMeta}>
+            <span style={{ ...styles.typeBadge, color: typeColor, borderColor: typeColor }}>
+              {ev.event_type}
+            </span>
+            <span style={styles.dialogDeviceId}>{ev.device_id}</span>
+            <span style={{ ...styles.dialogStatus, color: statusColor }}>{ev.status}</span>
+            <span style={styles.dialogTime}>{time}</span>
+          </div>
+          <button style={styles.closeBtn} onClick={onClose}>✕</button>
+        </div>
+
+        {/* Body */}
+        <div style={styles.dialogBody}>
+          <EventModalBody ev={ev} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Main component ────────────────────────────────────────────────────────────
+
 export function EventLog({ events }: Props) {
   const [filter, setFilter] = useState<string>('all');
-  const [expanded, setExpanded] = useState<string | null>(null);
+  const [modalEvent, setModalEvent] = useState<ActivityEvent | null>(null);
 
-  const reversed = [...events].reverse();
-  const allTypes = Array.from(new Set(events.map(e => e.event_type)));
+  // authorisation events are cert-generation internal messages with no HTTP I/O
+  const loggable = events.filter(e => e.event_type !== 'authorisation');
+  const reversed = [...loggable].reverse();
+  const allTypes = Array.from(new Set(loggable.map(e => e.event_type)));
   const visible = filter === 'all' ? reversed : reversed.filter(e => e.event_type === filter);
 
   return (
     <div style={styles.panel}>
       <div style={styles.header}>
         <span style={styles.title}>Activity Log</span>
-        <span style={styles.count}>{visible.length}{filter !== 'all' ? ` / ${events.length}` : ''} events</span>
+        <span style={styles.count}>{visible.length}{filter !== 'all' ? ` / ${loggable.length}` : ''} events</span>
       </div>
 
       {/* Filter chips */}
       <div style={styles.filters}>
-        <Chip label="ALL" active={filter === 'all'} color="#94a3b8" onClick={() => { setFilter('all'); setExpanded(null); }} />
+        <Chip label="ALL" active={filter === 'all'} color="#94a3b8" onClick={() => setFilter('all')} />
         {allTypes.map(t => (
           <Chip
             key={t}
             label={t.toUpperCase()}
             active={filter === t}
             color={TYPE_COLORS[t] ?? '#64748b'}
-            onClick={() => { setFilter(t); setExpanded(null); }}
+            onClick={() => setFilter(t)}
           />
         ))}
       </div>
@@ -206,8 +265,6 @@ export function EventLog({ events }: Props) {
           <div style={styles.empty}>No {filter === 'all' ? '' : filter + ' '}events yet.</div>
         ) : (
           visible.map((ev, i) => {
-            const key = `${ev.timestamp}:${ev.device_id}:${ev.event_type}`;
-            const isOpen = expanded === key;
             const typeColor = TYPE_COLORS[ev.event_type] ?? '#64748b';
             const statusColor = STATUS_COLORS[ev.status] ?? '#64748b';
             const time = new Date(ev.timestamp).toLocaleTimeString([], {
@@ -216,36 +273,31 @@ export function EventLog({ events }: Props) {
             const summary = getSummary(ev);
 
             return (
-              <React.Fragment key={i}>
-                <div
-                  style={{
-                    ...styles.row,
-                    background: isOpen ? '#0f1a27' : 'transparent',
-                    cursor: 'pointer',
-                  }}
-                  onClick={() => setExpanded(isOpen ? null : key)}
-                >
-                  <span style={{ ...styles.typeBadge, color: typeColor, borderColor: typeColor }}>
-                    {ev.event_type}
-                  </span>
-                  <span style={styles.deviceId}>{ev.device_id.slice(-12)}</span>
-                  <span style={styles.summary}>{summary}</span>
-                  <span style={{ ...styles.statusBadge, color: statusColor }}>
-                    {ev.status}
-                  </span>
-                  <span style={styles.time}>{time}</span>
-                  <span style={styles.arrow}>{isOpen ? '▲' : '▼'}</span>
-                </div>
-                {isOpen && (
-                  <div style={styles.detail}>
-                    <EventDetail ev={ev} />
-                  </div>
-                )}
-              </React.Fragment>
+              <div
+                key={`${ev.timestamp}:${ev.device_id}:${ev.event_type}:${i}`}
+                style={{ ...styles.row, cursor: 'pointer' }}
+                onClick={() => setModalEvent(ev)}
+              >
+                <span style={{ ...styles.typeBadge, color: typeColor, borderColor: typeColor }}>
+                  {ev.event_type}
+                </span>
+                <span style={styles.deviceId}>{ev.device_id.slice(-12)}</span>
+                <span style={styles.summary}>{summary}</span>
+                <span style={{ ...styles.statusBadge, color: statusColor }}>
+                  {ev.status}
+                </span>
+                <span style={styles.time}>{time}</span>
+                <span style={styles.arrow}>›</span>
+              </div>
             );
           })
         )}
       </div>
+
+      {/* Modal */}
+      {modalEvent && (
+        <EventModal ev={modalEvent} onClose={() => setModalEvent(null)} />
+      )}
     </div>
   );
 }
@@ -319,6 +371,7 @@ const styles: Record<string, React.CSSProperties> = {
     borderBottom: '1px solid #0f1520',
     borderRadius: 4,
     fontSize: 11,
+    transition: 'background 0.1s',
   },
   typeBadge: {
     fontSize: 9,
@@ -359,16 +412,116 @@ const styles: Record<string, React.CSSProperties> = {
     textAlign: 'right',
   },
   arrow: {
-    fontSize: 9,
+    fontSize: 13,
     color: '#334155',
     textAlign: 'right',
   },
-  detail: {
-    background: '#080d12',
+  empty: {
+    color: '#334155',
+    fontSize: 11,
+    padding: '12px 4px',
+    textAlign: 'center',
+  },
+  // ── Modal ──────────────────────────────────────────────────────────────────
+  backdrop: {
+    position: 'fixed',
+    inset: 0,
+    background: 'rgba(0,0,0,0.7)',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 1000,
+  },
+  dialog: {
+    background: '#0d1117',
+    border: '1px solid #1e2a38',
+    borderRadius: 12,
+    width: '90%',
+    maxWidth: 720,
+    maxHeight: '85vh',
+    display: 'flex',
+    flexDirection: 'column',
+    overflow: 'hidden',
+    boxShadow: '0 24px 64px rgba(0,0,0,0.6)',
+  },
+  dialogHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: '12px 16px',
+    borderBottom: '1px solid #1e2a38',
+    flexShrink: 0,
+  },
+  dialogMeta: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 10,
+    flexWrap: 'wrap',
+  },
+  dialogDeviceId: {
+    color: '#94a3b8',
+    fontSize: 11,
+    fontFamily: 'inherit',
+  },
+  dialogStatus: {
+    fontSize: 10,
+    fontWeight: 700,
+  },
+  dialogTime: {
+    fontSize: 10,
+    color: '#475569',
+  },
+  closeBtn: {
+    background: 'transparent',
+    border: 'none',
+    color: '#475569',
+    cursor: 'pointer',
+    fontSize: 14,
+    padding: '2px 6px',
+    borderRadius: 4,
+    flexShrink: 0,
+  },
+  dialogBody: {
+    overflowY: 'auto',
+    padding: '0 0 8px',
+    flex: 1,
+  },
+  modalSection: {
+    borderBottom: '1px solid #0f1a27',
+  },
+  modalSectionLabel: {
+    color: '#475569',
+    fontSize: 9,
+    fontWeight: 700,
+    letterSpacing: '0.08em',
+    padding: '8px 16px 4px',
+    textTransform: 'uppercase',
+  },
+  modalSectionBody: {
+    padding: '0 0 8px',
+  },
+  endpointBlock: {
+    margin: '4px 16px 8px',
     border: '1px solid #1e2a38',
     borderRadius: 6,
-    margin: '2px 0 6px 0',
     overflow: 'hidden',
+  },
+  endpointHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: '5px 10px',
+    background: '#080d12',
+    borderBottom: '1px solid #1e2a38',
+  },
+  endpointName: {
+    color: '#94a3b8',
+    fontSize: 10,
+    fontWeight: 600,
+  },
+  endpointCode: {
+    fontSize: 10,
+    fontWeight: 700,
   },
   json: {
     color: '#94a3b8',
@@ -376,35 +529,16 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 10,
     lineHeight: 1.6,
     margin: 0,
-    maxHeight: 200,
+    maxHeight: 260,
     overflow: 'auto',
     padding: '10px 14px',
     whiteSpace: 'pre-wrap',
     wordBreak: 'break-word',
-  },
-  section: {
-    borderBottom: '1px solid #0f1a27',
-    paddingBottom: 6,
-    marginBottom: 4,
-  },
-  sectionLabel: {
-    color: '#475569',
-    fontSize: 9,
-    fontWeight: 700,
-    letterSpacing: '0.08em',
-    padding: '6px 14px 2px',
-    textTransform: 'uppercase',
   },
   noData: {
     color: '#334155',
     fontSize: 10,
     fontStyle: 'italic',
     padding: '6px 14px',
-  },
-  empty: {
-    color: '#334155',
-    fontSize: 11,
-    padding: '12px 4px',
-    textAlign: 'center',
   },
 };

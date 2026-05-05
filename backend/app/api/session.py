@@ -11,7 +11,7 @@ import asyncio
 import logging
 import os
 import time
-from collections import deque
+from collections import defaultdict, deque
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -143,13 +143,6 @@ class Session:
         def on_reg_event(device_id: str, status: str, message: str) -> None:
             self._reg_log.append(RegistrationEvent(
                 device_id=device_id, status=status, message=message,
-            ))
-            self._activity_log.append(ActivityEvent(
-                timestamp=datetime.now(timezone.utc).isoformat(),
-                event_type="authorisation",
-                device_id=device_id,
-                status=status,
-                data={"message": message},
             ))
             if status == "registered":
                 self._devices_registered += 1
@@ -432,6 +425,7 @@ class Session:
             for e in base_events:
                 self._recent.append(e)
 
+            task_meta: list[tuple[TelemetryEvent, BaseTransport]] = []
             tasks = []
             if self.config.endpoint_mode == EndpointMode.ROUND_ROBIN and self._transports:
                 # Each event → one transport, cycling round-robin
@@ -442,6 +436,7 @@ class Session:
                         event if event.protocol == transport.endpoint.protocol
                         else event.model_copy(update={"protocol": transport.endpoint.protocol})
                     )
+                    task_meta.append((event, transport))
                     tasks.append(transport.send_event(delivered))
             else:
                 # Fan out: same event_id/data, protocol field reflects delivery path
@@ -451,22 +446,33 @@ class Session:
                             event if event.protocol == transport.endpoint.protocol
                             else event.model_copy(update={"protocol": transport.endpoint.protocol})
                         )
+                        task_meta.append((event, transport))
                         tasks.append(transport.send_event(delivered))
 
             results = await asyncio.gather(*tasks, return_exceptions=True)
-            for r in results:
-                if isinstance(r, Exception) or r is False:
+            event_responses: dict[str, list] = defaultdict(list)
+            for (event, transport), r in zip(task_meta, results):
+                if isinstance(r, Exception):
                     self._events_failed += 1
+                    event_responses[event.event_id].append({
+                        "name": transport.endpoint.name, "status_code": None,
+                        "body": None, "error": str(r)[:300],
+                    })
                 else:
-                    self._events_sent += 1
-                    sent += 1
+                    if r.get("ok"):
+                        self._events_sent += 1
+                        sent += 1
+                    else:
+                        self._events_failed += 1
+                    event_responses[event.event_id].append({
+                        "name": transport.endpoint.name,
+                        "status_code": r.get("status_code"),
+                        "body": r.get("body"),
+                        "error": r.get("error"),
+                    })
 
             credit_results = self._collect_credit_results()
             ts_ev = datetime.now(timezone.utc).isoformat()
-            endpoint_statuses = [
-                {"name": t.status.name, "status_code": t.status.last_status_code}
-                for t in self._transports if isinstance(t, HTTPTransport)
-            ]
             for event in base_events:
                 self._activity_log.append(ActivityEvent(
                     timestamp=ts_ev,
@@ -475,7 +481,7 @@ class Session:
                     status="anomaly" if event.is_anomaly else "ok",
                     data={
                         "payload": event.model_dump(mode="json"),
-                        "endpoint_statuses": endpoint_statuses,
+                        "endpoint_responses": event_responses.get(event.event_id, []),
                     },
                 ))
             for cr in credit_results:
@@ -567,20 +573,31 @@ class Session:
                 *[t.send_batch(b) for t, b in send_tasks],
                 return_exceptions=True,
             )
-            for (_, batch), result in zip(send_tasks, results):
-                if isinstance(result, Exception) or result is False:
+            event_responses: dict[str, list] = defaultdict(list)
+            for (transport, batch), result in zip(send_tasks, results):
+                if isinstance(result, Exception):
                     self._events_failed += len(batch.events)
+                    r_entry = {"name": transport.endpoint.name, "status_code": None,
+                               "body": None, "error": str(result)[:300]}
                 else:
-                    self._events_sent += len(batch.events)
-                    total_sent += len(batch.events)
-                    self._batches_sent += 1
+                    ok = result.get("ok", False)
+                    if ok:
+                        self._events_sent += len(batch.events)
+                        total_sent += len(batch.events)
+                        self._batches_sent += 1
+                    else:
+                        self._events_failed += len(batch.events)
+                    r_entry = {
+                        "name": transport.endpoint.name,
+                        "status_code": result.get("status_code"),
+                        "body": result.get("body"),
+                        "error": result.get("error"),
+                    }
+                for event in batch.events:
+                    event_responses[event.event_id].append(r_entry)
 
             credit_results = self._collect_credit_results()
             ts_ev = datetime.now(timezone.utc).isoformat()
-            endpoint_statuses = [
-                {"name": t.status.name, "status_code": t.status.last_status_code}
-                for t in self._transports if isinstance(t, HTTPTransport)
-            ]
             for event in base_events:
                 self._activity_log.append(ActivityEvent(
                     timestamp=ts_ev,
@@ -589,7 +606,7 @@ class Session:
                     status="anomaly" if event.is_anomaly else "ok",
                     data={
                         "payload": event.model_dump(mode="json"),
-                        "endpoint_statuses": endpoint_statuses,
+                        "endpoint_responses": event_responses.get(event.event_id, []),
                     },
                 ))
             for cr in credit_results:
