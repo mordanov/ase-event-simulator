@@ -57,15 +57,18 @@ Parameters:
 
   DefaultHttpEndpoints:
     Type: String
-    Default: "ingestion::http://ingestion-pipeline.aleksandr-mordanov.click:9000/ingest"
+    Default: "ingestion::http://origin.ingestion-pipeline.aleksandr-mordanov.click:9000/ingest"
     Description: >
       Comma-separated name::url pairs for HTTP send targets pre-populated in the UI.
-      Points to the ingestion pipeline PoC running Docker on EC2.
+      Uses origin.ingestion-pipeline.… (direct A record → Elastic IP) because the
+      apex ingestion-pipeline.… now resolves to CloudFront which does not proxy port 9000.
 
   DefaultMqttBrokerUrl:
     Type: String
-    Default: "mqtt://ingestion-pipeline.aleksandr-mordanov.click:1883"
-    Description: MQTT broker URL — Mosquitto on the ingestion pipeline EC2 instance.
+    Default: "mqtt://origin.ingestion-pipeline.aleksandr-mordanov.click:1883"
+    Description: >
+      MQTT broker URL — Mosquitto on the ingestion pipeline EC2 instance.
+      Uses origin.ingestion-pipeline.… (direct A record → Elastic IP) to bypass CloudFront.
 
   DefaultMqttTopic:
     Type: String
