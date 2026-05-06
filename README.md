@@ -41,8 +41,9 @@ docker compose up --build
 │          ├── TelemetryGenerator                             │
 │          │     └── device profiles × scenarios              │
 │          ├── Transports (per endpoint)                      │
-│          │     ├── HTTPTransport   (real, supports mTLS)    │
-│          │     ├── AWSIoTMQTTTransport (real MQTT5 / mock) │
+│          │     ├── HTTPTransport        (real, mTLS)        │
+│          │     ├── AWSIoTMQTTTransport  (MQTT5, AWS IoT)   │
+│          │     ├── LocalMqttTransport   (plain MQTT/Mosq.) │
 │          │     ├── WebSocketMockTransport                   │
 │          │     └── GRPCMockTransport                        │
 │          └── RecommendationClient (optional)                │
@@ -163,9 +164,14 @@ Before any telemetry is sent, every session runs a **registration phase** that s
 3. **Device profiles sent** — Each device's profile and biometrics are POST-ed to `/api/v1/devices` on every configured HTTP endpoint.
 4. **Telemetry starts** — mTLS certs are loaded into the HTTP / MQTT transports; events include `cert_fingerprint`.
 
-### Cloud mode (`SIMULATOR_CLOUD_MODE=true`)
+### Cloud mode
 
-Set `AWS_IOT_REGISTRATION_MODE` to control how devices are registered:
+| Env var | Value | Behaviour |
+|---|---|---|
+| `SIMULATOR_CLOUD_MODE` | `false` (default) | JITR simulation only — no AWS IoT API calls. Use this when the ingestion pipeline is not backed by AWS IoT Core. |
+| `SIMULATOR_CLOUD_MODE` | `true` | Enables AWS IoT registration. Auto-detected when running on ECS Fargate via `ECS_CONTAINER_METADATA_URI_V4`. |
+
+When `SIMULATOR_CLOUD_MODE=true`, set `AWS_IOT_REGISTRATION_MODE`:
 
 | Mode | Behaviour |
 |---|---|
@@ -178,7 +184,9 @@ Set `AWS_IOT_REGISTRATION_MODE` to control how devices are registered:
 |---|---|
 | 1 | `CA_CERT_PEM` / `CA_KEY_PEM` env vars (inline PEM, `\n` escaped) |
 | 2 | `CA_CERT_FILE` / `CA_KEY_FILE` file paths |
-| 3 | Auto-generated self-signed CA (local testing only) |
+| 3 | Auto-generated self-signed CA (local/dev only — not persisted across restarts) |
+
+> **ECS / Fargate:** CA credentials are stored in AWS Secrets Manager and injected as env vars at task startup. The `bootstrap.sh` script generates a self-signed CA on first deploy and stores it under `/{project}/ca-cert-pem` and `/{project}/ca-key-pem`. This ensures device certs survive container restarts and redeployments.
 
 ---
 
@@ -294,9 +302,14 @@ Fields absent for a given device type are sent as `null`.
 | Protocol | Type | Notes |
 |---|---|---|
 | **HTTP**      | Real   | Fires actual POST requests; supports per-device mTLS certs |
-| **MQTT**      | Real / Mock | Real MQTT5 to AWS IoT Core when certs + `awsiotsdk` are available; falls back to latency-realistic mock (1–8 ms, 99.5% reliability) |
+| **MQTT (AWS IoT)** | Real / Mock | Real MQTT5 to AWS IoT Core (`*.iot.*.amazonaws.com`) using per-device X.509 certs via `awsiotsdk`; falls back to latency-realistic mock (1–8 ms, 99.5% reliability) when SDK or certs are unavailable |
+| **MQTT (local)** | Real | Plain MQTT (no TLS) for local brokers such as Mosquitto. Selected automatically when the broker URL does not match the AWS IoT Core hostname pattern. Each event published individually to `<topic>/<device_id>`. |
 | **WebSocket** | Mock   | Simulates frame send (2–12 ms, 99.7% reliability) |
 | **gRPC**      | Mock   | Simulates unary call (3–15 ms, 99.8% reliability) |
+
+Transport selection for MQTT is automatic based on the broker URL:
+- URL contains `.iot.` **and** `amazonaws.com` → `AWSIoTMQTTTransport`
+- All other MQTT URLs → `LocalMqttTransport` (e.g. `mqtt://localhost:1883`)
 
 > Mock transports serialise the payload exactly as production would (JSON bytes for MQTT/WS, simulated protobuf for gRPC). No real broker or server needed.
 
@@ -333,12 +346,23 @@ Accumulate `batch_size` events, then send as a single JSON payload:
 
 When `recommendation_handicap > 0` (default: 500), the simulator automatically calls the recommendation API after each telemetry cycle for any device whose credit balance meets the threshold.
 
+### Credit flow
+
+1. **Credits earned** — the ingestion pipeline's `POST /ingest` response (HTTP 202) includes a `credit_results` array with `activity_reward`, `resulting_balance`, and `reward_tier` per device.
+2. **Threshold check** — after each tick, if `resulting_balance >= recommendation_handicap` the simulator calls the recommendation endpoint for that device.
+3. **Credits spent** — the recommendation endpoint deducts credits and returns ML-ranked health tips.
+
 The recommendation URL is derived from the first configured HTTP endpoint's host:
 ```
 POST {scheme}://{host}/api/v1/devices/{device_id}/recommendations
+Body: {"min_confidence": 0.2}
 ```
 
+At the default earning rate (workout = 10 credits/event), a device reaches the 500-credit threshold after roughly 50 successful workout events.
+
 Results (recommendations, credits spent, reward tier) appear in the **Recommendation Log** UI panel and the unified **Activity Log**.
+
+> **Note:** `recommendation_handicap: 0` disables recommendation calls entirely (useful for load/stress tests).
 
 ---
 
@@ -468,8 +492,9 @@ AWS_IOT_KEY_FILE=/path/to/device.private.key
 AWS_IOT_CA_FILE=/path/to/root-CA.crt
 
 # ── Cloud mode ────────────────────────────────────────────────────────────────
-# SIMULATOR_CLOUD_MODE=true         # force cloud behaviour
-# AWS_IOT_REGISTRATION_MODE=direct  # direct | jitr
+# SIMULATOR_CLOUD_MODE=false        # disable AWS IoT registration (default when not on ECS)
+# SIMULATOR_CLOUD_MODE=true         # force cloud behaviour (auto-detected on ECS Fargate)
+# AWS_IOT_REGISTRATION_MODE=direct  # direct | jitr (only relevant when cloud mode is enabled)
 
 # ── Recommendation API ────────────────────────────────────────────────────────
 INGESTION_API_KEY=poc-dev-key
@@ -531,14 +556,26 @@ CloudFormation templates are in `aws/cloudformation/` and the bootstrap script i
 
 | Stack | File | Purpose |
 |---|---|---|
-| `00-buckets` | S3 buckets for artifacts | |
-| `01-jitr` | JITR Lambda + IoT rule | Activates devices on first MQTT connect |
-| `02-network` | VPC / subnets / SGs | |
-| `03-persistent` | RDS / secrets | |
-| `04-platform` | ECS cluster / ECR / IAM | |
-| `05-service` | ECS service + ALB | |
-| `06-acm` | ACM certificate | |
-| `07-cdn` | CloudFront distribution | |
+| `00-buckets` | `00-buckets.yaml` | S3 bucket for frontend static assets |
+| `01-jitr` | `01-jitr.yaml` | JITR Lambda + IoT rule — activates device certs on first MQTT connect |
+| `02-network` | `02-network.yaml` | VPC, public subnets, ALB + ECS security groups |
+| `03-persistent` | `03-persistent.yaml` | ECR repository for the backend Docker image |
+| `04-platform` | `04-platform.yaml` | ECS cluster, ALB, IAM roles, task definition, Secrets Manager (CA certs, app config) |
+| `05-service` | `05-service.yaml` | ECS service — references task definition from `04-platform`; redeploy this for new images |
+| `06-acm` | `06-acm.yaml` | ACM certificates in `us-east-1` (required by CloudFront): simulator cert + wildcard `*.domain` for Grafana/Prometheus |
+| `07-cdn` | `07-cdn.yaml` | CloudFront distributions: simulator SPA + API, ingestion pipeline admin UI, Grafana, Prometheus; Route 53 records |
+
+#### CloudFront and EC2 connectivity
+
+`ingestion-pipeline.<domain>` resolves to **CloudFront** (ports 80/443 only). The ingestion pipeline exposes additional ports (9000 for HTTP ingest, 1883 for MQTT). Use the `origin.<domain>` subdomain, which resolves directly to the EC2 Elastic IP:
+
+```
+# .env / task definition
+DEFAULT_HTTP_ENDPOINTS=ingestion::http://origin.ingestion-pipeline.<domain>:9000/ingest
+DEFAULT_MQTT_BROKER_URL=mqtt://origin.ingestion-pipeline.<domain>:1883
+```
+
+The `bootstrap.sh` script sets these values automatically.
 
 ### JITR Lambda (`aws/scripts/lambda/jitr_handler.py`)
 
@@ -584,7 +621,7 @@ simulator/
 │       │   ├── registration_service.py # JITR simulation + AWS IoT provisioning
 │       │   └── runtime_mode.py        # Cloud vs local mode detection
 │       ├── transports/
-│       │   └── sender.py      # HTTP (mTLS) / MQTT5 (AWS IoT) / WS mock / gRPC mock
+│       │   └── sender.py      # HTTP (mTLS) / MQTT5 (AWS IoT) / plain MQTT (local) / WS mock / gRPC mock
 │       └── api/
 │           ├── routes.py      # All API endpoints (sessions, devices, meta, preview)
 │           └── session.py     # Session lifecycle + recommendation client
